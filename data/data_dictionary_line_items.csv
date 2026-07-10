@@ -1,0 +1,10 @@
+column,description,data_type
+item_id,Unique identifier for each line item (format ITMXXXXXX),categorical
+project_id,Foreign key linking to project_id in boq_projects.csv,categorical
+category,High-level work category: Civil / Electrical / Plumbing,categorical
+sub_category,Specific work sub-category (e.g. Concrete, Wiring, Switchgear, Sanitary Fittings),categorical
+item_name,Description of the specific material or work item,categorical
+unit,Unit of measurement (cum=cubic meter, sqm=square meter, nos=numbers/count, kg=kilogram, meter=running meter),categorical
+quantity,Quantity of the item required for the project (in the specified unit),numeric
+rate_per_unit_inr,Rate per unit in Indian Rupees (varies by city cost index; contains ~1.5% missing values by design),numeric
+amount_inr,Total amount for this line item in INR = quantity x rate_per_unit_inr (contains ~1.5% missing values by design),numeric

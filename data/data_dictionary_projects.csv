@@ -1,0 +1,14 @@
+column,description,data_type
+project_id,Unique identifier for each construction project (format PRJXXXX),categorical
+building_type,Building sub-type (9 categories: residential/commercial/industrial),categorical
+city,City where the project is located (India),categorical
+state,State where the project is located (India),categorical
+built_up_area_sqft,Total built-up area of the project in square feet,numeric
+num_floors,Number of floors/storeys in the building,numeric
+project_start_date,Project commencement date (YYYY-MM-DD),date
+estimated_duration_months,Estimated project completion duration in months (contains ~2% missing values by design),numeric
+total_civil_cost_inr,Total cost of civil works for the project in INR (sum of related line items),numeric
+total_electrical_cost_inr,Total cost of electrical works for the project in INR (sum of related line items),numeric
+total_plumbing_cost_inr,Total cost of plumbing works for the project in INR (sum of related line items),numeric
+total_project_cost_inr,Total overall project cost in INR (sum of civil + electrical + plumbing),numeric
+cost_per_sqft_inr,Total project cost divided by built-up area (INR per sqft),numeric
