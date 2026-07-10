@@ -125,7 +125,7 @@ Most models give you a single number: "9 days late."
 Conformal prediction gives you: "9 days late ± 3 days, with 80% confidence."
 This is **calibrated uncertainty** — it's honest about what it doesn't know.
 In construction, an overconfident wrong prediction costs crores.
-This is what makes SupplyMind different from generic tools.
+This is what makes NirmanAI different from generic tools.
 
 Read this if you want to go deeper:
 - `from mapie.regression import MapieRegressor` — another way to do it

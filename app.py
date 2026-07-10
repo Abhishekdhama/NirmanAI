@@ -1,5 +1,5 @@
 """
-SupplyMind — Streamlit Dashboard
+NirmanAI — Streamlit Dashboard
 ==================================
 Full-featured real-time dashboard for construction supply chain intelligence.
 Runs locally: streamlit run app.py
@@ -19,7 +19,7 @@ import random
 
 # ── Page config ──────────────────────────────────────────────
 st.set_page_config(
-    page_title="SupplyMind | AI Supply Chain Intelligence",
+    page_title="NirmanAI | AI Supply Chain Intelligence",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -87,28 +87,24 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ── Helpers ───────────────────────────────────────────────────
-MODELS_LOADED = False
-clf_delay = reg_delay = q_hat = enc_delay = feat_delay = None
-reg_wast = reg_wast_lo = reg_wast_hi = enc_wast = feat_wast = None
-
 @st.cache_resource
 def load_models():
-    global clf_delay, reg_delay, q_hat, enc_delay, feat_delay
-    global reg_wast, reg_wast_lo, reg_wast_hi, enc_wast, feat_wast
+    """Load all trained models once per process. Returns a dict, or None if unavailable."""
     try:
-        clf_delay  = joblib.load("models/delay_classifier.pkl")
-        reg_delay  = joblib.load("models/delay_regressor.pkl")
-        q_hat      = joblib.load("models/delay_q_hat.pkl")
-        enc_delay  = joblib.load("models/delay_encoders.pkl")
-        feat_delay = joblib.load("models/delay_features.pkl")
-        reg_wast   = joblib.load("models/wastage_regressor.pkl")
-        reg_wast_lo= joblib.load("models/wastage_regressor_lo.pkl")
-        reg_wast_hi= joblib.load("models/wastage_regressor_hi.pkl")
-        enc_wast   = joblib.load("models/wastage_encoders.pkl")
-        feat_wast  = joblib.load("models/wastage_features.pkl")
-        return True
-    except Exception as e:
-        return False
+        return {
+            "clf_delay":   joblib.load("models/delay_classifier.pkl"),
+            "reg_delay":   joblib.load("models/delay_regressor.pkl"),
+            "q_hat":       joblib.load("models/delay_q_hat.pkl"),
+            "enc_delay":   joblib.load("models/delay_encoders.pkl"),
+            "feat_delay":  joblib.load("models/delay_features.pkl"),
+            "reg_wast":    joblib.load("models/wastage_regressor.pkl"),
+            "reg_wast_lo": joblib.load("models/wastage_regressor_lo.pkl"),
+            "reg_wast_hi": joblib.load("models/wastage_regressor_hi.pkl"),
+            "enc_wast":    joblib.load("models/wastage_encoders.pkl"),
+            "feat_wast":   joblib.load("models/wastage_features.pkl"),
+        }
+    except Exception:
+        return None
 
 def monsoon_intensity(month):
     profile = {1:0.0,2:0.0,3:0.0,4:0.05,5:0.15,
@@ -164,11 +160,12 @@ col_logo, col_title, col_status = st.columns([1, 5, 2])
 with col_logo:
     st.markdown("## 🏗️")
 with col_title:
-    st.markdown("# SupplyMind")
+    st.markdown("# NirmanAI")
     st.markdown("<p style='color:#8892b0;margin-top:-12px;'>AI Supply Chain Intelligence for Indian Construction</p>",
                 unsafe_allow_html=True)
 with col_status:
-    models_ok = load_models()
+    models = load_models()
+    models_ok = models is not None
     if models_ok:
         st.success("✅ Models Loaded")
     else:
@@ -206,21 +203,34 @@ with st.sidebar:
         st.markdown(f"☀️ Weather: Normal (Monsoon {m_int:.0%})")
 
 # ── KPI ROW ───────────────────────────────────────────────────
-k1, k2, k3, k4, k5 = st.columns(5)
-k1.metric("📦 Active Orders",   "23",     "+3 this week")
-k2.metric("⚠️ At-Risk Deliveries", "7",  "↑ 2 from last week")
-k3.metric("🔴 Critical Alerts",    "3",  "Action needed")
-k4.metric("💰 Projected Overrun", "₹18.4L", "vs ₹12L baseline")
-k5.metric("📉 Avg Wastage Est.", "13.2%",   "Industry: 20-30%")
+def kpi_card(value, label, sub, value_color="#4fc3f7", sub_color="#8892b0"):
+    return f"""
+    <div class="metric-card">
+        <h3 style="color:{value_color};margin:0;font-size:28px;">{value}</h3>
+        <p style="color:#e8eaf6;margin:6px 0 0;font-size:13px;font-weight:600;">{label}</p>
+        <p style="color:{sub_color};margin:2px 0 0;font-size:11px;">{sub}</p>
+    </div>"""
+
+kpis = [
+    ("23",     "📦 Active Orders",      "+3 this week",        "#4fc3f7", "#44ff88"),
+    ("7",      "⚠️ At-Risk Deliveries", "↑ 2 from last week",  "#ff8800", "#ff8800"),
+    ("3",      "🔴 Critical Alerts",    "Action needed",       "#ff4444", "#ff4444"),
+    ("₹18.4L", "💰 Projected Overrun",  "vs ₹12L baseline",    "#ffcc00", "#8892b0"),
+    ("13.2%",  "📉 Avg Wastage Est.",   "Industry: 20-30%",    "#44ff88", "#8892b0"),
+]
+for col, (val, label, sub, vc, sc) in zip(st.columns(5), kpis):
+    with col:
+        st.markdown(kpi_card(val, label, sub, vc, sc), unsafe_allow_html=True)
 
 st.markdown("---")
 
 # ── TABS ─────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📡 Live Delivery Monitor",
     "📦 Wastage Intelligence",
     "🔮 Predict New Order",
-    "📊 Analytics & Insights"
+    "📊 Analytics & Insights",
+    "📋 Smart Procurement Plan"
 ])
 
 # ═══════════════════════════════════════════
@@ -260,7 +270,7 @@ with tab1:
         return colors.get(val, "")
 
     st.dataframe(
-        df_del.style.applymap(color_risk, subset=["Risk"]),
+        df_del.style.map(color_risk, subset=["Risk"]),
         use_container_width=True, height=420
     )
 
@@ -294,7 +304,7 @@ with tab1:
             line=dict(color="#4fc3f7", width=2),
             fillcolor="rgba(79,195,247,0.2)"
         ))
-        fig_mon.add_vline(x=months[current_month-1], line_dash="dash",
+        fig_mon.add_vline(x=current_month-1, line_dash="dash",
                           line_color="#ff8800", annotation_text="Now")
         fig_mon.update_layout(
             title="Monsoon Disruption Risk — Annual Pattern",
@@ -304,6 +314,36 @@ with tab1:
             yaxis=dict(range=[0,100]), showlegend=False
         )
         st.plotly_chart(fig_mon, use_container_width=True)
+
+    # KAYA integration preview (Pitch Deck Slide 9)
+    st.markdown("---")
+    st.markdown("### 🔗 KAYA AI Integration Preview")
+    st.markdown("""
+    <div style="background:#1a1d2e;border:1px solid #2a2d3e;border-radius:12px;padding:20px;">
+        <p style="color:#4fc3f7;font-weight:600;margin:0;">KAYA Jarvis — Proactive Supplier Outreach</p>
+        <p style="color:#8892b0;font-size:13px;margin:8px 0 16px;">
+            Powered by NirmanAI Risk Intelligence
+        </p>
+        <div style="background:#0f1117;border-radius:8px;padding:14px;margin-bottom:10px;">
+            🤖 <strong style="color:#e8eaf6;">Jarvis (automated)</strong>
+            <span style="color:#8892b0;font-size:12px;"> · just now</span><br>
+            <span style="color:#cdd6e4;font-size:13px;">
+            "NirmanAI flagged your TMT Steel order (Jharkhand → Bihar) at 84% delay risk.
+            I've already contacted 2 alternate suppliers and scheduled a callback for 3pm today.
+            Estimated delay prevented: 11 days."
+            </span>
+        </div>
+        <div style="background:#0f1117;border-radius:8px;padding:14px;">
+            🤖 <strong style="color:#e8eaf6;">Jarvis (automated)</strong>
+            <span style="color:#8892b0;font-size:12px;"> · 2 hours ago</span><br>
+            <span style="color:#cdd6e4;font-size:13px;">
+            "River Sand delivery from Rajasthan — NirmanAI predicts 91% chance of
+            12-day delay due to monsoon on NH-48. Recommend: split order across
+            Madhya Pradesh supplier. Saving ₹1.2L in idle labor cost."
+            </span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════
 # TAB 2: WASTAGE INTELLIGENCE
@@ -325,7 +365,7 @@ with tab2:
                     "Low":"background-color:#44ff8815"}.get(val,"")
 
         st.dataframe(
-            df_wast.style.applymap(color_cat, subset=["Category"]),
+            df_wast.style.map(color_cat, subset=["Category"]),
             use_container_width=True, height=300
         )
 
@@ -405,6 +445,7 @@ with tab3:
     if st.button("🔮 Predict Delay Risk", type="primary", use_container_width=True):
         m_int_ord = monsoon_intensity(order_month)
 
+        wastage_result = None
         if models_ok:
             from train_delay_model import predict_delay
             from train_wastage_model import predict_wastage
@@ -423,8 +464,37 @@ with tab3:
                 "supplier_reliability": 1 - past_del * 0.8,
                 "past_delay_rate": past_del,
             }
-            result = predict_delay(clf_delay, reg_delay, q_hat, enc_delay, feat_delay, inp)
-        else:
+            wast_inp = {
+                "project_type": project_type, "state": state,
+                "project_size_sqft": project_size,
+                "project_duration_months": 12,
+                "month_of_construction": order_month,
+                "contractor_experience_yrs": contractor_exp,
+                "num_workers": max(20, project_size // 200),
+                "workforce_skill_level": workforce_skill,
+                "supervision_quality": supervision,
+                "material_type": material,
+                "blueprint_quantity": quantity,
+                "logistics_score": 0.6,
+                "monsoon_intensity": m_int_ord,
+                "monsoon_sensitivity": 0.5,
+            }
+            try:
+                with st.spinner("NirmanAI is calculating risk..."):
+                    result = predict_delay(
+                        models["clf_delay"], models["reg_delay"], models["q_hat"],
+                        models["enc_delay"], models["feat_delay"], inp
+                    )
+                    wastage_result = predict_wastage(
+                        models["reg_wast"], models["reg_wast_lo"], models["reg_wast_hi"],
+                        models["enc_wast"], models["feat_wast"], wast_inp
+                    )
+            except Exception:
+                st.error("⚠️ Model prediction failed — showing demo estimate instead. "
+                         "Re-run `python setup.py` to retrain the models.")
+                models_ok = False
+
+        if not models_ok:
             # Demo mode mock
             delay_prob = min(0.95, 0.15 + m_int_ord*0.4 + past_del*0.5 + (distance/5000)*0.2)
             pred_days  = int(delay_prob * 14) if delay_prob > 0.5 else 0
@@ -492,6 +562,28 @@ with tab3:
         )
         st.plotly_chart(fig_gauge, use_container_width=True)
 
+        if wastage_result:
+            st.markdown("#### 📦 Wastage Estimate for This Order")
+            w1, w2, w3 = st.columns(3)
+            w1.metric("Predicted Wastage",
+                      f"{wastage_result['predicted_wastage_pct']:.1f}%",
+                      f"Range: {wastage_result['wastage_range_low']:.1f}–{wastage_result['wastage_range_high']:.1f}%")
+            w2.metric("Order With Buffer",
+                      f"{wastage_result['actual_qty_estimate']:,.0f} units",
+                      f"Blueprint: {wastage_result['blueprint_quantity']:,} units")
+            w3.metric("Est. Cost Overrun",
+                      f"₹{wastage_result['estimated_cost_overrun_inr']:,.0f}",
+                      f"Category: {wastage_result['wastage_category']}")
+
+            wast_box = {"High":"alert-box","Medium":"warning-box","Low":"ok-box"}[wastage_result["wastage_category"]]
+            wast_factors = "".join(f"<li>{f}</li>" for f in wastage_result["risk_factors"])
+            st.markdown(f"""
+            <div class="{wast_box}">
+                <strong>Wastage drivers:</strong>
+                <ul style="margin:4px 0 0;font-size:13px;color:#cdd6e4;">{wast_factors}</ul>
+            </div>
+            """, unsafe_allow_html=True)
+
 # ═══════════════════════════════════════════
 # TAB 4: ANALYTICS
 # ═══════════════════════════════════════════
@@ -541,8 +633,8 @@ with tab4:
         ))
         fig_trend.add_hline(y=50, line_dash="dash", line_color="#ff4444",
                             annotation_text="High risk threshold")
-        fig_trend.add_vline(x=months_label[current_month-1], line_dash="dot",
-                            line_color="#ffffff88", annotation_text="Now")
+        fig_trend.add_vline(x=current_month-1, line_dash="dot",
+                            line_color="rgba(255,255,255,0.55)", annotation_text="Now")
         fig_trend.update_layout(
             title="Average Delay Probability by Month",
             yaxis_title="Delay Probability (%)",
@@ -562,17 +654,137 @@ with tab4:
     m4.metric("Projects Delayed",   "77%",  "Avg 20-month overrun")
 
     st.info("""
-    **SupplyMind ROI Estimate**: On a typical ₹50 crore residential project, 
-    SupplyMind reduces wastage by 8-12% and prevents 2-3 critical delivery delays.
+    **NirmanAI ROI Estimate**: On a typical ₹50 crore residential project, 
+    NirmanAI reduces wastage by 8-12% and prevents 2-3 critical delivery delays.
     **Estimated savings: ₹18–28 lakhs per project.**  
     At ₹50K/month SaaS pricing, ROI is achieved within the first month.
     """)
+
+# ═══════════════════════════════════════════
+# TAB 5: SMART PROCUREMENT PLANNER
+# ═══════════════════════════════════════════
+with tab5:
+    st.markdown("### 📋 Smart Procurement Planner")
+    st.caption("AI-generated week-by-week order schedule to minimize delays and wastage")
+
+    st.markdown("#### Enter Bill of Quantities")
+    materials_selected = st.multiselect(
+        "Select materials for this project",
+        ["TMT Steel","OPC Cement","River Sand","Coarse Aggregate",
+         "Fly Ash Bricks","Structural Steel","Electrical Cable","HDPE Pipes"],
+        default=["TMT Steel","OPC Cement","River Sand"]
+    )
+
+    if materials_selected:
+        bom_data = []
+        qty_cols = st.columns(min(len(materials_selected), 4))
+        for i, mat in enumerate(materials_selected):
+            with qty_cols[i % len(qty_cols)]:
+                qty = st.number_input(f"{mat}", 10, 10000, 100, key=f"bom_{mat}",
+                                      help="Blueprint quantity")
+            bom_data.append({"material_type": mat, "blueprint_quantity": qty})
+
+        if st.button("📋 Generate Procurement Plan", type="primary", use_container_width=True):
+            schedule_data = []
+            total_buffer_cost = 0
+
+            with st.spinner("NirmanAI is building your procurement schedule..."):
+                if models_ok:
+                    from train_delay_model import predict_delay
+                    from train_wastage_model import predict_wastage
+                    m_int_plan = monsoon_intensity(current_month)
+
+                    for item in bom_data:
+                        mat, qty = item["material_type"], item["blueprint_quantity"]
+                        delay_res = predict_delay(
+                            models["clf_delay"], models["reg_delay"], models["q_hat"],
+                            models["enc_delay"], models["feat_delay"],
+                            {
+                                "month": current_month, "day_of_week": 0,
+                                "quarter": (current_month-1)//3+1, "is_festival_period": 0,
+                                "material_type": mat,
+                                "supplier_tier": "Tier 2 (Regional Distributor)",
+                                "origin_state": "Maharashtra", "destination_state": state,
+                                "distance_km": 800, "order_quantity": qty,
+                                "promised_lead_days": 14,
+                                "monsoon_intensity": m_int_plan, "monsoon_sensitivity": 0.5,
+                                "dest_logistics_score": 0.6, "orig_logistics_score": 0.7,
+                                "dest_monsoon_severity": 0.6,
+                                "supplier_reliability": 0.7, "past_delay_rate": 0.35,
+                            }
+                        )
+                        wast_res = predict_wastage(
+                            models["reg_wast"], models["reg_wast_lo"], models["reg_wast_hi"],
+                            models["enc_wast"], models["feat_wast"],
+                            {
+                                "project_type": project_type, "state": state,
+                                "project_size_sqft": project_size,
+                                "project_duration_months": 12,
+                                "month_of_construction": current_month,
+                                "contractor_experience_yrs": contractor_exp,
+                                "num_workers": max(20, project_size // 200),
+                                "workforce_skill_level": workforce_skill,
+                                "supervision_quality": supervision,
+                                "material_type": mat, "blueprint_quantity": qty,
+                                "logistics_score": 0.6,
+                                "monsoon_intensity": m_int_plan, "monsoon_sensitivity": 0.5,
+                            }
+                        )
+                        risk_level = delay_res["risk_label"]
+                        order_week = {"Critical":"Week 1","High":"Week 1",
+                                      "Medium":"Week 2","Low":"Week 3"}[risk_level]
+                        reason = delay_res["top_risk_factors"][0]
+                        buffer_qty = wast_res["actual_qty_estimate"]
+                        total_buffer_cost += wast_res["estimated_cost_overrun_inr"]
+                        schedule_data.append({
+                            "Material": mat,
+                            "Order By": order_week,
+                            "Risk Level": risk_level,
+                            "Delay Prob": f"{delay_res['delay_probability']:.0%}",
+                            "Blueprint Qty": qty,
+                            "Order Qty (with wastage buffer)": f"{buffer_qty:,.0f}",
+                            "Wastage Est.": f"{wast_res['predicted_wastage_pct']:.1f}%",
+                            "Reason": reason,
+                        })
+                else:
+                    for i, item in enumerate(bom_data):
+                        risk_level = ["Low","Medium","High","Critical"][i % 4]
+                        order_week = ["Week 3","Week 2","Week 1","Week 1"][i % 4]
+                        schedule_data.append({
+                            "Material": item["material_type"],
+                            "Order By": order_week,
+                            "Risk Level": risk_level,
+                            "Reason": ("Monsoon risk — order early"
+                                       if risk_level in ["High","Critical"]
+                                       else "Standard lead time"),
+                        })
+
+            st.markdown("#### Recommended Procurement Schedule")
+            df_plan = pd.DataFrame(schedule_data).sort_values("Order By")
+
+            def color_plan_risk(val):
+                return {"Critical":"background-color:#ff444430",
+                        "High":"background-color:#ff880025",
+                        "Medium":"background-color:#ffcc0020",
+                        "Low":"background-color:#44ff8815"}.get(val, "")
+
+            st.dataframe(
+                df_plan.style.map(color_plan_risk, subset=["Risk Level"]),
+                use_container_width=True, hide_index=True
+            )
+
+            if models_ok and total_buffer_cost:
+                st.warning(f"💸 Total projected wastage overrun across BoQ: **₹{total_buffer_cost:,.0f}** — "
+                           "already included in the recommended order quantities above.")
+            st.success("💡 Ordering high-risk materials 2 weeks early prevents ₹8-15 lakh in idle labor costs")
+    else:
+        st.info("Select at least one material above to generate a procurement plan.")
 
 # ── FOOTER ────────────────────────────────────────────────────
 st.markdown("---")
 st.markdown(
     "<p style='text-align:center;color:#4a5568;font-size:12px;'>"
-    "SupplyMind | Built by Team Aim-Nexus, IIT Madras | "
+    "NirmanAI | Built by Team Aim-Nexus, IIT Madras | "
     "KAYA x IIT India Hackathon 2026 | "
     "Every prediction includes confidence intervals — because responsible AI never overpromises."
     "</p>",

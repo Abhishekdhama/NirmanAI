@@ -1,5 +1,5 @@
 """
-SupplyMind — Material Wastage Estimation Model
+NirmanAI — Material Wastage Estimation Model
 ================================================
 Predicts actual material consumption vs. blueprint estimates
 for Indian construction projects.
@@ -126,7 +126,7 @@ def compute_shap_wastage(reg, X, feature_names):
     plt.figure(figsize=(10, 7))
     shap.summary_plot(shap_values, sample, feature_names=feature_names,
                       show=False, plot_type="bar")
-    plt.title("SupplyMind — Feature Importance (SHAP)\nWastage Estimation Model", fontsize=13)
+    plt.title("NirmanAI — Feature Importance (SHAP)\nWastage Estimation Model", fontsize=13)
     plt.tight_layout()
     plt.savefig("reports/shap_wastage.png", dpi=150, bbox_inches="tight")
     plt.close()
@@ -187,7 +187,7 @@ def predict_wastage(reg, reg_lo, reg_hi, encoders, feature_names, input_dict: di
 
 if __name__ == "__main__":
     print("\n" + "="*55)
-    print("  SupplyMind — Training Wastage Estimation Models")
+    print("  NirmanAI — Training Wastage Estimation Models")
     print("="*55)
 
     df, X, y_reg, y_clf, feature_names, encoders = load_and_prepare()

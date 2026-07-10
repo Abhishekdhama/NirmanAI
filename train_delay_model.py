@@ -1,5 +1,5 @@
 """
-SupplyMind — Delay Prediction Model
+NirmanAI — Delay Prediction Model
 =====================================
 Predicts construction material delivery delays for Indian projects.
 
@@ -187,7 +187,7 @@ def compute_shap(clf, X_train, X_test, feature_names, save_path="reports/shap_de
     shap.summary_plot(shap_values, X_test.iloc[:500],
                       feature_names=feature_names,
                       show=False, plot_type="bar")
-    plt.title("SupplyMind — Feature Importance (SHAP)\nDelay Prediction Model", fontsize=13)
+    plt.title("NirmanAI — Feature Importance (SHAP)\nDelay Prediction Model", fontsize=13)
     plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close()
@@ -278,7 +278,7 @@ def predict_delay(clf, reg, q_hat, encoders, feature_names, input_dict: dict) ->
 
 if __name__ == "__main__":
     print("\n" + "="*55)
-    print("  SupplyMind — Training Delay Prediction Models")
+    print("  NirmanAI — Training Delay Prediction Models")
     print("="*55)
 
     # Load data

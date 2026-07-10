@@ -1,10 +1,10 @@
-# SupplyMind — README
+# NirmanAI — README
 # Team Aim-Nexus | IIT Madras | KAYA x IIT Hackathon 2026
 
 ## Project Structure
 
 ```
-supplymind/
+nirmanai/
 ├── generate_data.py        # Synthetic dataset generator (India-specific)
 ├── train_delay_model.py    # Delay prediction: XGBoost + conformal intervals + SHAP
 ├── train_wastage_model.py  # Wastage estimation: LightGBM quantile + SHAP
@@ -53,11 +53,12 @@ Trains wastage estimation models:
 4. SHAP explainability — key drivers of wastage
 
 ### app.py
-Full Streamlit dashboard with 4 tabs:
-1. Live Delivery Monitor — risk alerts, delivery table, monsoon timeline
+Full Streamlit dashboard with 5 tabs:
+1. Live Delivery Monitor — risk alerts, delivery table, monsoon timeline, KAYA integration preview
 2. Wastage Intelligence — per-material forecast, scenario analysis
-3. Predict New Order — interactive prediction with gauge chart
+3. Predict New Order — interactive prediction with gauge chart + wastage estimate
 4. Analytics — state logistics heatmap, monthly trend analysis
+5. Smart Procurement Plan — AI-generated week-by-week order schedule from a Bill of Quantities
 
 ## Key Design Choices
 
