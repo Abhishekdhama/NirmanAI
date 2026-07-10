@@ -1,5 +1,5 @@
 """
-SupplyMind — One-click Setup & Run Script
+NirmanAI — One-click Setup & Run Script
 Run this first: python setup.py
 Then run dashboard: streamlit run app.py
 """
@@ -13,7 +13,7 @@ def run(cmd):
         sys.exit(1)
 
 print("\n" + "="*55)
-print("  SupplyMind — Setup & Training Pipeline")
+print("  NirmanAI — Setup & Training Pipeline")
 print("  Team Aim-Nexus | IIT Madras")
 print("="*55)
 

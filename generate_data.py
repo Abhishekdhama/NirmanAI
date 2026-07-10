@@ -1,5 +1,5 @@
 """
-SupplyMind — Synthetic Dataset Generator
+NirmanAI — Synthetic Dataset Generator
 ==========================================
 Generates realistic Indian construction supply chain data:
 - Delivery records with delay labels
@@ -397,7 +397,7 @@ if __name__ == "__main__":
     os.makedirs("data", exist_ok=True)
 
     print("\n" + "="*50)
-    print("  SupplyMind — Generating Synthetic Datasets")
+    print("  NirmanAI — Generating Synthetic Datasets")
     print("="*50 + "\n")
 
     print("Generating delivery delay dataset...")
