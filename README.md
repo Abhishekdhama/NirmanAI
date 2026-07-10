@@ -89,9 +89,9 @@ are realistic; the specific numbers are synthetic. We're honest about this.
 | Serialization | joblib |
 
 ## Team
-- Lead: [Your Name] — project direction, pitch, domain research
-- ML Engineer 1: [M2 Name] — delay model refinement
-- ML Engineer 2: [M3 Name] — wastage model refinement
-- Full-Stack: [M4 Name] — dashboard, integration
+- Lead: Abhishek Dhama — project direction, pitch, domain research
+- ML Engineer 1: Kanchan Dalal — delay model refinement
+- ML Engineer 2: Ishank Gupta — wastage model refinement
+- Full-Stack: Muskan Jadon — dashboard, integration
 
 IIT Madras | BS Data Science | 2026
