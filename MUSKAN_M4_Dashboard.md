@@ -6,7 +6,7 @@
 
 ## What You Own
 The **Streamlit Dashboard** (`app.py`) — the live, interactive demo that judges
-will actually SEE. You own the look, feel, and experience of SupplyMind.
+will actually SEE. You own the look, feel, and experience of NirmanAI.
 This is what makes or breaks the "wow factor."
 You also own the **KAYA Integration mock** — the slide/screen that could win us
 the internship offer.
@@ -79,7 +79,7 @@ Walk through all 4 tabs. Click everything. See what works and what needs polish.
 
 ### Day 3 (July 9) — KAYA integration mock screen
 - [ ] **This is the most important task for the pitch deck.**
-  Create a screenshot/mockup of what SupplyMind would look like
+  Create a screenshot/mockup of what NirmanAI would look like
   INSIDE KAYA's platform. Create a new section in `app.py`:
 
   ```python
@@ -90,13 +90,13 @@ Walk through all 4 tabs. Click everything. See what works and what needs polish.
   <div style="background:#1a1d2e;border:1px solid #2a2d3e;border-radius:12px;padding:20px;">
       <p style="color:#4fc3f7;font-weight:600;margin:0;">KAYA Jarvis — Proactive Supplier Outreach</p>
       <p style="color:#8892b0;font-size:13px;margin:8px 0 16px;">
-          Powered by SupplyMind Risk Intelligence
+          Powered by NirmanAI Risk Intelligence
       </p>
       <div style="background:#0f1117;border-radius:8px;padding:14px;margin-bottom:10px;">
           🤖 <strong style="color:#e8eaf6;">Jarvis (automated)</strong>
           <span style="color:#8892b0;font-size:12px;"> · just now</span><br>
           <span style="color:#cdd6e4;font-size:13px;">
-          "SupplyMind flagged your TMT Steel order (Jharkhand → Bihar) at 84% delay risk.
+          "NirmanAI flagged your TMT Steel order (Jharkhand → Bihar) at 84% delay risk.
           I've already contacted 2 alternate suppliers and scheduled a callback for 3pm today.
           Estimated delay prevented: 11 days."
           </span>
@@ -105,7 +105,7 @@ Walk through all 4 tabs. Click everything. See what works and what needs polish.
           🤖 <strong style="color:#e8eaf6;">Jarvis (automated)</strong>
           <span style="color:#8892b0;font-size:12px;"> · 2 hours ago</span><br>
           <span style="color:#cdd6e4;font-size:13px;">
-          "River Sand delivery from Rajasthan — SupplyMind predicts 91% chance of 
+          "River Sand delivery from Rajasthan — NirmanAI predicts 91% chance of 
           12-day delay due to monsoon on NH-48. Recommend: split order across 
           Madhya Pradesh supplier. Saving ₹1.2L in idle labor cost."
           </span>
@@ -195,7 +195,7 @@ Improve this logic in Week 2 using Kanchan's and Ishank's real model outputs.
 - [ ] Error handling — if a model fails to load, show a clear message
 - [ ] Loading spinners on predictions:
   ```python
-  with st.spinner("SupplyMind is calculating risk..."):
+  with st.spinner("NirmanAI is calculating risk..."):
       result = predict_delay(...)
   ```
 - [ ] Clean up commented-out code
