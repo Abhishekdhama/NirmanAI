@@ -43,8 +43,33 @@ os.makedirs("reports", exist_ok=True)
 def load_and_prepare(path: str = "data/delivery_delays.csv"):
     df = pd.read_csv(path)
 
-    # Categorical encoding
-    cat_cols = ["material_type", "supplier_tier", "origin_state", "destination_state"]
+    # High temperature
+    df["High_Temperature"] = (df["temperature"] >= 35).astype(int)
+    # High humidity
+    df["High_Humidity"] = (df["humidity"] >= 75).astype(int)
+    # Heavy traffic
+    df["High_Traffic"] = (df["traffic_status"] == "Heavy").astype(int)
+    # Long waiting time
+    df["Long_Wait"] = (df["waiting_time"] >= 30).astype(int)
+    # Low inventory
+    df["Low_Inventory"] = (df["inventory_level"] <= 250).astype(int)
+    # Long distance shipment
+    df["Long_Distance"] = (df["distance_km"] >= 800).astype(int)
+    # High order value
+    df["High_Order_Value"] = (df["order_value_inr"] > df["order_value_inr"].median()).astype(int)
+    # Poor road quality
+    df["Poor_Road"] = (df["road_quality"] < 0.55).astype(int)
+    # Poor logistics
+    df["Poor_Logistics"] = (df["dest_logistics_score"] < 0.55).astype(int)
+    # Environmental Risk Score
+    df["Environmental_Risk"] = (
+        df["High_Temperature"]
+        + df["High_Humidity"]
+        + (df["monsoon_intensity"] > 0.60).astype(int)
+    )
+
+    # Categorical encoding (including new categorical features if needed, though they are mapped to binary above)
+    cat_cols = ["material_type", "supplier_tier", "origin_state", "destination_state", "vehicle_type", "traffic_status"]
     encoders = {}
     for col in cat_cols:
         le = LabelEncoder()
@@ -55,11 +80,17 @@ def load_and_prepare(path: str = "data/delivery_delays.csv"):
         "month", "day_of_week", "quarter", "is_festival_period",
         "material_type_enc", "supplier_tier_enc",
         "origin_state_enc", "destination_state_enc",
+        "vehicle_type_enc", "traffic_status_enc",
         "distance_km", "order_quantity", "promised_lead_days",
+        "temperature", "humidity", "waiting_time", "inventory_level",
+        "asset_utilization", "demand_forecast", "order_value_inr",
+        "road_quality", "supplier_reliability", "past_delay_rate",
         "monsoon_intensity", "monsoon_sensitivity",
         "dest_logistics_score", "orig_logistics_score",
-        "dest_monsoon_severity", "supplier_reliability",
-        "past_delay_rate",
+        "dest_monsoon_severity", 
+        "High_Temperature", "High_Humidity", "High_Traffic", "Long_Wait",
+        "Low_Inventory", "Long_Distance", "High_Order_Value", 
+        "Poor_Road", "Poor_Logistics", "Environmental_Risk"
     ]
 
     X = df[FEATURES]
@@ -120,14 +151,12 @@ def train_regressor(X, y_clf, y_reg):
 
     print("\n[REGRESSOR] Training LightGBM delay magnitude model...")
     reg = lgb.LGBMRegressor(
-        n_estimators=400,
-        max_depth=6,
-        learning_rate=0.04,
-        num_leaves=63,
-        subsample=0.8,
-        colsample_bytree=0.8,
+        objective="regression",
+        n_estimators=500,
+        learning_rate=0.05,
+        max_depth=7,
         random_state=42,
-        verbose=-1,
+        verbose=-1
     )
     reg.fit(X_train, y_train)
 
@@ -143,10 +172,10 @@ def train_regressor(X, y_clf, y_reg):
 # 4. CONFORMAL PREDICTION — Calibrated CI
 # ─────────────────────────────────────────────
 
-def build_conformal_intervals(reg, X_del_train, X_del_test, y_del_train, alpha=0.20):
+def build_conformal_intervals(reg, X_del_train, X_del_test, y_del_train, alpha=0.10):
     """
     Build prediction intervals using conformal prediction.
-    alpha=0.20 → 80% coverage intervals (honest about uncertainty)
+    alpha=0.10 → 90% coverage intervals (honest about uncertainty)
     """
     print("\n[CONFORMAL] Building calibrated prediction intervals...")
 
@@ -159,7 +188,7 @@ def build_conformal_intervals(reg, X_del_train, X_del_test, y_del_train, alpha=0
     residuals = np.abs(y_cal.values - cal_preds)
     q_hat = np.quantile(residuals, 1 - alpha)
 
-    print(f"    Conformal quantile (q̂) at {int((1-alpha)*100)}% coverage: ±{q_hat:.1f} days")
+    print(f"    Conformal quantile (q_hat) at {int((1-alpha)*100)}% coverage: +/-{q_hat:.1f} days")
 
     test_preds = reg.predict(X_del_test)
     lower = np.maximum(0, test_preds - q_hat)
@@ -169,7 +198,7 @@ def build_conformal_intervals(reg, X_del_train, X_del_test, y_del_train, alpha=0
     coverage = np.mean(
         (X_del_test.index[:len(y_del_test)] if False else np.ones(len(test_preds), dtype=bool))
     )
-    print(f"    Interval width: ±{q_hat:.1f} days")
+    print(f"    Interval width: +/-{q_hat:.1f} days")
 
     return q_hat
 
@@ -206,13 +235,16 @@ def predict_delay(clf, reg, q_hat, encoders, feature_names, input_dict: dict) ->
     """
     # Encode categoricals
     row = input_dict.copy()
-    for col in ["material_type", "supplier_tier", "origin_state", "destination_state"]:
-        le = encoders[col]
-        val = row.get(col, le.classes_[0])
-        if val in le.classes_:
-            row[col + "_enc"] = le.transform([val])[0]
+    for col in ["material_type", "supplier_tier", "origin_state", "destination_state", "vehicle_type", "traffic_status"]:
+        if col in encoders:
+            le = encoders[col]
+            val = row.get(col, le.classes_[0])
+            if val in le.classes_:
+                row[col + "_enc"] = le.transform([val])[0]
+            else:
+                row[col + "_enc"] = 0  # fallback
         else:
-            row[col + "_enc"] = 0  # fallback
+            row[col + "_enc"] = 0
 
     X_input = pd.DataFrame([{f: row.get(f, 0) for f in feature_names}])
 
