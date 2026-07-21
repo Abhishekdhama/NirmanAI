@@ -463,6 +463,20 @@ with tab3:
                 "dest_monsoon_severity": 0.65,
                 "supplier_reliability": 1 - past_del * 0.8,
                 "past_delay_rate": past_del,
+                # New features from Kanchan's notebook:
+                "vehicle_type": "Truck - Heavy",
+                "temperature": 28.0,
+                "humidity": 65.0 if m_int_ord < 0.3 else 85.0,
+                "traffic_status": "Moderate",
+                "waiting_time": 15,
+                "inventory_level": 500,
+                "asset_utilization": 80.0,
+                "demand_forecast": 400,
+                "order_value_inr": quantity * 1500,
+                "road_quality": 0.65,
+                "supplier_capacity": 80,
+                "fuel_price_index": 105.0,
+                "driver_experience": 10,
             }
             wast_inp = {
                 "project_type": project_type, "state": state,
@@ -711,6 +725,19 @@ with tab5:
                                 "dest_logistics_score": 0.6, "orig_logistics_score": 0.7,
                                 "dest_monsoon_severity": 0.6,
                                 "supplier_reliability": 0.7, "past_delay_rate": 0.35,
+                                "vehicle_type": "Truck - Medium",
+                                "temperature": 32.0,
+                                "humidity": 70.0,
+                                "traffic_status": "Clear",
+                                "waiting_time": 10,
+                                "inventory_level": 600,
+                                "asset_utilization": 85.0,
+                                "demand_forecast": 500,
+                                "order_value_inr": qty * 1500,
+                                "road_quality": 0.7,
+                                "supplier_capacity": 90,
+                                "fuel_price_index": 100.0,
+                                "driver_experience": 12,
                             }
                         )
                         wast_res = predict_wastage(
