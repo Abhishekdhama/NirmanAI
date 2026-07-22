@@ -20,8 +20,7 @@ env/
 *.swo
 
 # Data & Models
-*.csv
-*.pkl
+
 *.joblib
 *.h5
 *.pt
