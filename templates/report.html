@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>NirmanAI Report - {{ report_id }}</title>
+    <style>
+        @page {
+            size: A4;
+            margin: 1.5cm;
+        }
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #1a1d2e;
+            color: #ffffff;
+            margin: 0;
+            padding: 20px;
+        }
+        h1, h2, h3, h4, h5, h6 {
+            color: #4fc3f7;
+            margin-top: 0;
+        }
+        .header {
+            text-align: center;
+            border-bottom: 2px solid #4fc3f7;
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+        }
+        .header h1 {
+            margin-bottom: 5px;
+        }
+        .header p {
+            margin: 0;
+            color: #b0bec5;
+        }
+        .section {
+            margin-bottom: 30px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 15px;
+            background-color: #24283b;
+        }
+        th, td {
+            border: 1px solid #4fc3f7;
+            padding: 8px 12px;
+            text-align: left;
+        }
+        th {
+            background-color: #151825;
+            color: #4fc3f7;
+        }
+        .risk-red { color: #ff5252; font-weight: bold; }
+        .risk-orange { color: #ff9800; font-weight: bold; }
+        .risk-yellow { color: #ffd600; font-weight: bold; }
+        .risk-green { color: #69f0ae; font-weight: bold; }
+        .actions-list {
+            list-style-type: square;
+            padding-left: 20px;
+        }
+        .actions-list li {
+            margin-bottom: 8px;
+        }
+        .footer {
+            margin-top: 40px;
+            text-align: center;
+            font-size: 0.8em;
+            color: #8c9eff;
+            border-top: 1px solid #4fc3f7;
+            padding-top: 10px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h1>NirmanAI</h1>
+        <p>Supply Chain Intelligence Platform</p>
+        <p>Project: {{ project_name }} | Type: {{ project_type }} | State: {{ state }} | Month: {{ current_month }}</p>
+        <p>Report ID: {{ report_id }}</p>
+    </div>
+
+    <div class="section">
+        <h2>Executive Summary</h2>
+        <p>{{ executive_summary }}</p>
+    </div>
+
+    <div class="section">
+        <h2>Weather Conditions</h2>
+        <p><strong>Forecast:</strong> {{ weather.condition }}</p>
+        <p><strong>Impact:</strong> {{ weather.impact }}</p>
+    </div>
+
+    <div class="section">
+        <h2>Top 5 Risk Deliveries</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Material</th>
+                    <th>Supplier</th>
+                    <th>Risk Level</th>
+                    <th>Reason</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for delivery in risk_deliveries %}
+                <tr>
+                    <td>{{ delivery.material }}</td>
+                    <td>{{ delivery.supplier }}</td>
+                    <td class="risk-{{ delivery.risk_level_color }}">{{ delivery.risk_level }}</td>
+                    <td>{{ delivery.reason }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="section">
+        <h2>Wastage Forecast</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Material</th>
+                    <th>Forecasted Wastage (%)</th>
+                    <th>Threshold (%)</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for wastage in wastage_forecasts %}
+                <tr>
+                    <td>{{ wastage.material }}</td>
+                    <td>{{ wastage.forecast }}%</td>
+                    <td>{{ wastage.threshold }}%</td>
+                    <td class="risk-{{ wastage.status_color }}">{{ wastage.status }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="section">
+        <h2>Recommended Actions</h2>
+        <ul class="actions-list">
+            {% for action in recommended_actions %}
+            <li>{{ action }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+
+    <div class="footer">
+        <p>&copy; 2026 NirmanAI. All rights reserved. Generated on {{ generation_date }}.</p>
+    </div>
+
+</body>
+</html>
