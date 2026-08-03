@@ -91,10 +91,9 @@ st.markdown("""
 def load_models():
     """Load all trained models once per process. Returns a dict, or None if unavailable."""
     try:
-        return {
+        models = {
             "clf_delay":   joblib.load("models/delay_classifier.pkl"),
             "reg_delay":   joblib.load("models/delay_regressor.pkl"),
-            "q_hat":       joblib.load("models/delay_q_hat.pkl"),
             "enc_delay":   joblib.load("models/delay_encoders.pkl"),
             "feat_delay":  joblib.load("models/delay_features.pkl"),
             "reg_wast":    joblib.load("models/wastage_regressor.pkl"),
@@ -103,6 +102,11 @@ def load_models():
             "enc_wast":    joblib.load("models/wastage_encoders.pkl"),
             "feat_wast":   joblib.load("models/wastage_features.pkl"),
         }
+        try:
+            models["conformal"] = joblib.load("models/delay_conformal.pkl")
+        except FileNotFoundError:
+            models["conformal"] = joblib.load("models/delay_q_hat.pkl")
+        return models
     except Exception:
         return None
 
@@ -225,12 +229,15 @@ for col, (val, label, sub, vc, sc) in zip(st.columns(5), kpis):
 st.markdown("---")
 
 # ── TABS ─────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "📡 Live Delivery Monitor",
     "📦 Wastage Intelligence",
     "🔮 Predict New Order",
     "📊 Analytics & Insights",
-    "📋 Smart Procurement Plan"
+    "📋 Smart Procurement Plan",
+    "📈 Simulation Engine",
+    "🤖 Agentic Assistant",
+    "📄 Export PDF Report"
 ])
 
 # ═══════════════════════════════════════════
@@ -496,7 +503,7 @@ with tab3:
             try:
                 with st.spinner("NirmanAI is calculating risk..."):
                     result = predict_delay(
-                        models["clf_delay"], models["reg_delay"], models["q_hat"],
+                        models["clf_delay"], models["reg_delay"], models["conformal"],
                         models["enc_delay"], models["feat_delay"], inp
                     )
                     wastage_result = predict_wastage(
@@ -711,7 +718,7 @@ with tab5:
                     for item in bom_data:
                         mat, qty = item["material_type"], item["blueprint_quantity"]
                         delay_res = predict_delay(
-                            models["clf_delay"], models["reg_delay"], models["q_hat"],
+                            models["clf_delay"], models["reg_delay"], models["conformal"],
                             models["enc_delay"], models["feat_delay"],
                             {
                                 "month": current_month, "day_of_week": 0,
@@ -806,6 +813,180 @@ with tab5:
             st.success("💡 Ordering high-risk materials 2 weeks early prevents ₹8-15 lakh in idle labor costs")
     else:
         st.info("Select at least one material above to generate a procurement plan.")
+
+# ═══════════════════════════════════════════
+# TAB 6: SIMULATION ENGINE
+# ═══════════════════════════════════════════
+with tab6:
+    st.markdown("### 📈 Monte Carlo Simulation Engine")
+    st.caption("Simulate thousands of supply chain cascade failure modes.")
+    if st.button("▶️ Run 10,000 Simulations", key="run_sim"):
+        from simulation_engine import run_simulation
+        with st.spinner("Running Monte Carlo simulation (N=10,000)..."):
+            sim_res = run_simulation(project_type, state, current_month, 10000)
+            tl = sim_res["project_timeline"]
+            summary = sim_res["executive_summary"]
+            
+            r1, r2, r3 = st.columns(3)
+            r1.metric("On-Time Probability", f"{tl['on_time_probability_pct']}%")
+            r2.metric("Most Likely Duration", f"{tl['most_likely_days']} days", f"Planned: {tl['baseline_duration_days']} days")
+            r3.metric("Critical Risk", summary["risk_level"])
+            
+            st.error(f"**Headline:** {summary['headline']}")
+            
+            # Duration Distribution Histogram
+            st.markdown("#### Duration Distribution (10,000 runs)")
+            dist = sim_res["duration_distribution"]
+            bin_centers = [(dist["bin_edges"][i] + dist["bin_edges"][i+1]) / 2 for i in range(len(dist["counts"]))]
+            fig_dist = go.Figure(go.Bar(
+                x=bin_centers, y=dist["counts"],
+                marker_color="#4fc3f7",
+                name="Frequency"
+            ))
+            fig_dist.add_vline(x=tl['baseline_duration_days'], line_dash="dash", line_color="#44ff88", annotation_text="Baseline Plan")
+            fig_dist.add_vline(x=tl['most_likely_days'], line_dash="dash", line_color="#ff8800", annotation_text="Most Likely")
+            fig_dist.update_layout(
+                title="Project Completion Duration Spread",
+                xaxis_title="Total Project Duration (days)", yaxis_title="Frequency",
+                paper_bgcolor='#1a1d2e', plot_bgcolor='#1a1d2e', font_color='#e8eaf6'
+            )
+            st.plotly_chart(fig_dist, use_container_width=True)
+            
+            c1, c2 = st.columns(2)
+            with c1:
+                # Activity Risk Ranking
+                st.markdown("#### Activity Risk Ranking")
+                df_act = pd.DataFrame(sim_res["activity_risk_ranking"][:8])
+                if not df_act.empty:
+                    st.dataframe(
+                        df_act[["activity", "pct_simulations_delayed", "avg_delay_when_delayed", "max_delay_observed"]].rename(
+                            columns={"activity": "Activity", "pct_simulations_delayed": "Delayed (%)",
+                                     "avg_delay_when_delayed": "Avg Delay (days)", "max_delay_observed": "Max Delay (days)"}
+                        ).style.background_gradient(cmap='Reds', subset=['Delayed (%)']),
+                        use_container_width=True, hide_index=True
+                    )
+                
+                # Cascade Risk
+                if sim_res.get("cascade_risk"):
+                    st.markdown("#### Cascade Risk Effects")
+                    for cr in sim_res["cascade_risk"][:3]:
+                        st.warning(f"**{cr['material']}** -> {cr['cascade_events']} cascade events, "
+                                   f"avg {cr['avg_cascade_delay']} days delay, "
+                                   f"affects {len(cr['activities_affected'])} downstream activities")
+                
+            with c2:
+                # Material Risk Breakdown
+                st.markdown("#### Material Risk Profile")
+                df_mat = pd.DataFrame(sim_res["material_risk_ranking"])
+                if not df_mat.empty:
+                    fig_mat = px.bar(df_mat, x="delay_frequency", y="material", orientation='h',
+                                    color="delay_frequency", color_continuous_scale="Reds",
+                                    title="Material Delay Frequency (%)")
+                    fig_mat.update_layout(paper_bgcolor='#1a1d2e', plot_bgcolor='#1a1d2e',
+                                          font_color='#e8eaf6', showlegend=False,
+                                          coloraxis_showscale=False)
+                    st.plotly_chart(fig_mat, use_container_width=True)
+                
+                # Critical Path Frequency
+                if sim_res.get("critical_path_frequency"):
+                    st.markdown("#### Critical Path Bottlenecks")
+                    for act_name, freq in list(sim_res["critical_path_frequency"].items())[:5]:
+                        st.caption(f"**{act_name}**: bottleneck in {freq}% of simulations")
+            
+            # Recommended Actions
+            st.markdown("#### Prescriptive Recommendations")
+            for rec in summary['recommended_actions']:
+                st.markdown(f"- {rec}")
+                
+            # Pareto Frontier from optimization
+            st.markdown("#### Cost-Risk Pareto Frontier")
+            try:
+                from simulation_engine import optimize_procurement as opt_proc
+                opt = opt_proc(
+                    [{"material_type": "TMT Steel", "quantity": 80},
+                     {"material_type": "OPC Cement", "quantity": 500}],
+                    state, current_month
+                )
+                if opt.get("pareto_frontier"):
+                    pf = pd.DataFrame(opt["pareto_frontier"])
+                    fig_opt = px.line(pf, x="extra_spend_pct", y="risk_reduction_pct",
+                                     markers=True, title="Optimal Trade-offs (Extra Spend vs Risk Reduction)",
+                                     text="label")
+                    fig_opt.update_traces(textposition="top center", textfont_size=10)
+                    fig_opt.update_layout(paper_bgcolor='#1a1d2e', plot_bgcolor='#1a1d2e',
+                                          font_color='#e8eaf6',
+                                          xaxis_title="Extra Spend (%)", yaxis_title="Risk Reduction (%)")
+                    st.plotly_chart(fig_opt, use_container_width=True)
+            except Exception:
+                st.caption("Pareto optimization requires trained models.")
+                
+            st.info("Use the **Agentic Assistant** tab to ask Jarvis for a detailed mitigation strategy.")
+
+# ═══════════════════════════════════════════
+# TAB 7: AGENTIC ASSISTANT
+# ═══════════════════════════════════════════
+with tab7:
+    st.markdown("### 🤖 KAYA Jarvis — Agentic AI")
+    st.caption("Chat with NirmanAI's procurement assistant (hooks into Simulator, Optimizer, and ML models).")
+    
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+            if msg.get("tool"):
+                st.caption(f"🔧 Tool used: {msg['tool']}")
+
+    if prompt := st.chat_input("Ask Jarvis to simulate risks, find alternate suppliers, or optimize procurement..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+            
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                from agent import process_agent_message
+                ctx = {
+                    "project_type": project_type,
+                    "state": state,
+                    "month": current_month
+                }
+                res = process_agent_message(prompt, "demo-conv-123", context=ctx)
+                st.markdown(res["message"])
+                if res["tool_used"]:
+                    st.caption(f"🔧 Tool used: {res['tool_used']}")
+                st.session_state.messages.append({"role": "assistant", "content": res["message"], "tool": res["tool_used"]})
+
+# ═══════════════════════════════════════════
+# TAB 8: PDF EXPORT
+# ═══════════════════════════════════════════
+with tab8:
+    st.markdown('### 📄 Generate Risk Report')
+    st.caption('Export a branded PDF report with risk analysis, wastage forecasts, and action items.')
+    report_name = st.text_input('Report Project Name', project_name, key='rpt_name')
+    if st.button('📄 Generate Report', type='primary', use_container_width=True, key='gen_report'):
+        with st.spinner('Generating branded report...'):
+            from report_generator import generate_pdf_report
+            import uuid
+            rid = f'RPT-{uuid.uuid4().hex[:8].upper()}'
+            filepath = generate_pdf_report(
+                report_id=rid,
+                project_name=report_name,
+                project_type=project_type,
+                state=state,
+                current_month=current_month,
+                output_dir='reports/generated',
+                models=models if models_ok else None
+            )
+            st.success(f'Report generated: {rid}')
+            with open(filepath, 'rb') as f:
+                st.download_button(
+                    label='Download Report',
+                    data=f.read(),
+                    file_name=f'NirmanAI_{rid}.html',
+                    mime='text/html',
+                    use_container_width=True
+                )
 
 # ── FOOTER ────────────────────────────────────────────────────
 st.markdown("---")
