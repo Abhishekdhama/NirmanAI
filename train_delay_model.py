@@ -23,9 +23,11 @@ from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.metrics import (mean_absolute_error, mean_squared_error,
                              classification_report, roc_auc_score)
 from sklearn.pipeline import Pipeline
-from sklearn.calibration import CalibratedClassifierCV
+from sklearn.pipeline import Pipeline
 import xgboost as xgb
 import lightgbm as lgb
+from mapie.regression import MapieQuantileRegressor
+from mapie.conformity_scores import AbsoluteConformityScore
 import shap
 import matplotlib
 matplotlib.use("Agg")
@@ -151,7 +153,8 @@ def train_regressor(X, y_clf, y_reg):
 
     print("\n[REGRESSOR] Training LightGBM delay magnitude model...")
     reg = lgb.LGBMRegressor(
-        objective="regression",
+        objective="quantile",
+        alpha=0.5,
         n_estimators=500,
         learning_rate=0.05,
         max_depth=7,
@@ -174,33 +177,22 @@ def train_regressor(X, y_clf, y_reg):
 
 def build_conformal_intervals(reg, X_del_train, X_del_test, y_del_train, alpha=0.10):
     """
-    Build prediction intervals using conformal prediction.
-    alpha=0.10 → 90% coverage intervals (honest about uncertainty)
+    Build prediction intervals using conformal prediction (MAPIE CQR).
+    alpha=0.10 -> 90% coverage intervals (honest about uncertainty)
     """
-    print("\n[CONFORMAL] Building calibrated prediction intervals...")
+    print("\n[CONFORMAL] Building calibrated prediction intervals (CQR)...")
 
-    # Residuals on calibration set (split conformal)
-    cal_size = int(0.3 * len(X_del_train))
-    X_cal = X_del_train.iloc[:cal_size]
-    y_cal = y_del_train.iloc[:cal_size]
+    mapie_reg = MapieQuantileRegressor(reg, method="quantile", cv="split", alpha=alpha)
+    mapie_reg.fit(X_del_train, y_del_train)
 
-    cal_preds = reg.predict(X_cal)
-    residuals = np.abs(y_cal.values - cal_preds)
-    q_hat = np.quantile(residuals, 1 - alpha)
+    preds, intervals = mapie_reg.predict(X_del_test)
+    widths = intervals[:, 1, 0] - intervals[:, 0, 0]
+    avg_width = np.mean(widths)
+    
+    print(f"    Conformal quantile regressor trained at {int((1-alpha)*100)}% coverage")
+    print(f"    Average adaptive interval width: +/-{avg_width/2:.1f} days")
 
-    print(f"    Conformal quantile (q_hat) at {int((1-alpha)*100)}% coverage: +/-{q_hat:.1f} days")
-
-    test_preds = reg.predict(X_del_test)
-    lower = np.maximum(0, test_preds - q_hat)
-    upper = test_preds + q_hat
-
-    # Empirical coverage check
-    coverage = np.mean(
-        (X_del_test.index[:len(y_del_test)] if False else np.ones(len(test_preds), dtype=bool))
-    )
-    print(f"    Interval width: +/-{q_hat:.1f} days")
-
-    return q_hat
+    return mapie_reg
 
 # ─────────────────────────────────────────────
 # 5. SHAP EXPLAINABILITY
@@ -220,7 +212,7 @@ def compute_shap(clf, X_train, X_test, feature_names, save_path="reports/shap_de
     plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"    SHAP plot saved → {save_path}")
+    print(f"    SHAP plot saved -> {save_path}")
 
     return explainer, shap_values
 
@@ -228,7 +220,7 @@ def compute_shap(clf, X_train, X_test, feature_names, save_path="reports/shap_de
 # 6. INFERENCE FUNCTION (used by API + dashboard)
 # ─────────────────────────────────────────────
 
-def predict_delay(clf, reg, q_hat, encoders, feature_names, input_dict: dict) -> dict:
+def predict_delay(clf, reg, q_hat_or_mapie, encoders, feature_names, input_dict: dict) -> dict:
     """
     Single delivery prediction.
     Returns: delay_prob, predicted_days, CI, risk_score, risk_label, risk_factors
@@ -252,13 +244,24 @@ def predict_delay(clf, reg, q_hat, encoders, feature_names, input_dict: dict) ->
     is_delayed = delay_prob >= 0.5
 
     if is_delayed:
-        pred_days = max(0, float(reg.predict(X_input)[0]))
-        lower = max(0, pred_days - q_hat)
-        upper = pred_days + q_hat
+        if hasattr(q_hat_or_mapie, "predict") and "Mapie" in type(q_hat_or_mapie).__name__:
+            pred_array, intervals = q_hat_or_mapie.predict(X_input)
+            pred_days = max(0, float(pred_array[0]))
+            lower = max(0, float(intervals[0, 0, 0]))
+            upper = float(intervals[0, 1, 0])
+        else:
+            pred_days = max(0, float(reg.predict(X_input)[0]))
+            q_hat = q_hat_or_mapie if isinstance(q_hat_or_mapie, (int, float)) else 5.0
+            lower = max(0, pred_days - q_hat)
+            upper = pred_days + q_hat
     else:
         pred_days = 0.0
         lower = 0.0
-        upper = max(0, q_hat * delay_prob * 2)
+        if hasattr(q_hat_or_mapie, "predict") and "Mapie" in type(q_hat_or_mapie).__name__:
+            upper = max(0, 5.0 * delay_prob * 2)
+        else:
+            q_hat = q_hat_or_mapie if isinstance(q_hat_or_mapie, (int, float)) else 5.0
+            upper = max(0, q_hat * delay_prob * 2)
 
     # Risk score 0-100
     risk_score = int(delay_prob * 100)
@@ -328,7 +331,7 @@ if __name__ == "__main__":
     reg, X_reg_test, y_reg_test = train_regressor(X, y_clf, y_reg)
 
     # Conformal prediction intervals
-    q_hat = build_conformal_intervals(reg, X_del_train, X_del_test, y_del_train)
+    mapie_reg = build_conformal_intervals(reg, X_del_train, X_del_test, y_del_train)
 
     # SHAP explainability
     explainer, shap_values = compute_shap(clf, X_train_clf, X_test_clf, feature_names)
@@ -339,12 +342,12 @@ if __name__ == "__main__":
     joblib.dump(reg,          "models/delay_regressor.pkl")
     joblib.dump(encoders,     "models/delay_encoders.pkl")
     joblib.dump(feature_names,"models/delay_features.pkl")
-    joblib.dump(q_hat,        "models/delay_q_hat.pkl")
-    print("    All models saved → models/")
+    joblib.dump(mapie_reg,    "models/delay_conformal.pkl")
+    print("    All models saved -> models/")
 
     # Quick sanity test
-    print("\n[TEST] Running sample prediction...")
-    sample = {
+    print("\n[TEST] Running sample prediction (hard)...")
+    sample_hard = {
         "month": 8, "day_of_week": 0, "quarter": 3,
         "is_festival_period": 0,
         "material_type": "OPC Cement",
@@ -363,14 +366,26 @@ if __name__ == "__main__":
         "past_delay_rate": 0.38,
     }
 
-    result = predict_delay(clf, reg, q_hat, encoders, feature_names, sample)
-    print(f"\n  Order: OPC Cement, Rajasthan → Bihar, August (Monsoon)")
-    print(f"  Delay Probability:  {result['delay_probability']:.1%}")
-    print(f"  Predicted Delay:    {result['predicted_delay_days']:.0f} days")
-    print(f"  Confidence Range:   {result['ci_lower']:.0f} – {result['ci_upper']:.0f} days")
-    print(f"  Risk Label:         {result['risk_label']}")
+    result_hard = predict_delay(clf, reg, mapie_reg, encoders, feature_names, sample_hard)
+    print(f"\n  Order: OPC Cement, Rajasthan -> Bihar, August (Monsoon)")
+    print(f"  Delay Probability:  {result_hard['delay_probability']:.1%}")
+    print(f"  Predicted Delay:    {result_hard['predicted_delay_days']:.0f} days")
+    print(f"  Confidence Range:   {result_hard['ci_lower']:.0f} - {result_hard['ci_upper']:.0f} days")
+    print(f"  Risk Label:         {result_hard['risk_label']}")
     print(f"  Risk Factors:")
-    for rf in result['top_risk_factors']:
-        print(f"    ⚠ {rf}")
+    for rf in result_hard['top_risk_factors']:
+        print(f"    - {rf}")
 
-    print("\n[✓] Delay model training complete.")
+    print("\n[TEST] Running sample prediction (easy)...")
+    sample_easy = sample_hard.copy()
+    sample_easy.update({
+        "month": 2, "monsoon_intensity": 0.0, "dest_monsoon_severity": 0.0,
+        "distance_km": 200, "supplier_reliability": 0.95, "past_delay_rate": 0.05
+    })
+    result_easy = predict_delay(clf, reg, mapie_reg, encoders, feature_names, sample_easy)
+    print(f"\n  Order: OPC Cement, Rajasthan -> Bihar, February (Clear)")
+    print(f"  Delay Probability:  {result_easy['delay_probability']:.1%}")
+    print(f"  Predicted Delay:    {result_easy['predicted_delay_days']:.0f} days")
+    print(f"  Confidence Range:   {result_easy['ci_lower']:.0f} - {result_easy['ci_upper']:.0f} days")
+    
+    print("\n[OK] Delay model training complete.")
