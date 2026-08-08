@@ -18,6 +18,29 @@ load_dotenv()
 # In-memory conversation store for hackathon purposes
 CONVERSATIONS = {}
 
+_MODELS = None
+_MODELS_LOADED = False
+
+
+def get_models():
+    """
+    Lazily load the shared model bundle, once per process.
+
+    Jarvis MUST use the same models as the dashboard. Calling the simulator
+    without them silently switches to the physics fallback, and the assistant
+    then quotes a different on-time probability than the Simulator tab for the
+    same project — the fastest way to lose a reviewer's trust.
+    """
+    global _MODELS, _MODELS_LOADED
+    if not _MODELS_LOADED:
+        _MODELS_LOADED = True
+        try:
+            from model_store import load_models
+            _MODELS = load_models()
+        except Exception:
+            _MODELS = None
+    return _MODELS
+
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 use_gemini = False
 if GEMINI_API_KEY:
@@ -77,20 +100,23 @@ def process_agent_message(message: str, conv_id: str = None, context: dict = Non
         try:
             model = genai.GenerativeModel(
                 model_name='gemini-2.0-flash',
-                system_instruction='''You are KAYA Jarvis, an authoritative, highly experienced supply chain logistics consultant for NirmanAI - an AI platform that predicts delivery delays, estimates material wastage, and optimizes procurement for Indian construction projects.
+                system_instruction='''You are KAYA Jarvis, the procurement assistant inside
+NirmanAI — a platform that predicts delivery delays, estimates material wastage and optimises
+procurement for Indian construction projects.
 
-You have access to these tools (call them by describing what you need):
-- Monte Carlo Simulation Engine: Simulates a project's entire supply chain 10,000 times to find failure modes
-- Prescriptive Optimizer: Uses mathematical optimization to find the best supplier allocation strategy
-- Supplier Database: Contains 65+ verified Indian construction material suppliers with reliability scores
-- Weather Intelligence: Real-time monsoon and weather risk data for all Indian states
+NirmanAI's engines run separately from you and their output is appended to your reply under a
+"Backend Data" heading. Your job is to frame and interpret that output for a site manager.
 
 Rules:
-- Always speak confidently and professionally, like a senior consultant billing Rs 5 lakhs/day
-- Reference specific numbers, percentages, and data points - never be vague
-- When recommending actions, be specific: name suppliers, give timelines, quantify savings
-- Keep responses concise (3-5 paragraphs max) but information-dense
-- Use markdown formatting for readability'''
+- NEVER invent numbers. Delay probabilities, on-time percentages, supplier names, reliability
+  scores, lead times, costs and savings come from the backend section only. If you do not have
+  a figure, say what would need to be run to get it.
+- Do not claim access to live ERP data, real purchase orders, or real-time truck tracking.
+  NirmanAI has none of those.
+- Explain the mechanism — monsoon, corridor logistics, supplier track record, festival
+  shutdowns — rather than restating the number.
+- Be direct and concrete about ACTIONS: what to order, when, and what to hedge.
+- Keep it to 2-4 short paragraphs. Use markdown.'''
             )
             response = model.generate_content(message)
             llm_response_text = response.text
@@ -117,14 +143,20 @@ Rules:
         # Route to Prescriptive Optimization
         try:
             from simulation_engine import optimize_procurement
-            opt_res = optimize_procurement([{"material_type": mat, "quantity": 100}], state, month)
+            opt_res = optimize_procurement([{"material_type": mat, "quantity": 100}],
+                                           state, month, models=get_models())
             strat = opt_res["procurement_strategy"][0]
-            
-            backend_text = (f"I've run the optimization engine for your **{mat}** order in **{state}**.\n\n"
-                             f"**Optimal Procurement Strategy:**\n"
-                             f"- Primary Supplier: {strat['primary_supplier']} ({strat['primary_allocation_pct']}% of order)\n"
-                             f"- Backup Supplier: {strat['backup_supplier']} ({strat['backup_allocation_pct']}% of order)\n\n"
-                             f"**Impact:** This split reduces your delay risk by {strat['estimated_delay_reduction_pct']}%.\n"
+
+            backend_text = (f"I've run the optimiser for your **{mat}** order in **{state}**.\n\n"
+                             f"**Recommended allocation** — {strat['strategy']}\n"
+                             f"- Primary: {strat['primary_supplier']} "
+                             f"({strat['primary_allocation_pct']}% of the order)\n"
+                             f"- Backup: {strat['backup_supplier']} "
+                             f"({strat['backup_allocation_pct']}%)\n"
+                             f"- Cost premium over single-sourcing: "
+                             f"{strat['cost_premium_pct']:+.1f}%\n\n"
+                             f"**Impact:** cuts the probability of a complete on-site "
+                             f"stock-out by **{strat['estimated_delay_reduction_pct']:.0f}%**.\n\n"
                              f"{opt_res['recommendation']}")
             tool_used = "Prescriptive_Optimizer"
             tool_data = opt_res
@@ -138,18 +170,23 @@ Rules:
         # Route to Simulation Engine
         try:
             from simulation_engine import run_simulation
-            sim_res = run_simulation(project_type, state, month, 1000)
+            # Same models and same run size as the Simulator tab, so the two
+            # never quote different numbers for the same project.
+            sim_res = run_simulation(project_type, state, month, 10000,
+                                     models=get_models())
             tl = sim_res["project_timeline"]
             summary = sim_res["executive_summary"]
-            
+            actions = "\n".join(f"- {a}" for a in summary["recommended_actions"][:3])
+
             backend_text = (f"I've run the Monte Carlo simulation for your **{project_type}** in **{state}**.\n\n"
-                             f"**Simulation Results (1,000 runs)**\n"
-                             f"- On-time probability: {tl['on_time_probability_pct']}%\n"
-                             f"- Most likely duration: {tl['most_likely_days']} days\n"
-                             f"- Risk Level: {summary['risk_level']}\n\n"
-                             f"**Agent Recommendation:**\n"
-                             f"{summary['headline']} "
-                             f"I highly recommend securing backup suppliers for your critical path materials.")
+                             f"**Simulation results (10,000 scenarios)**\n"
+                             f"- On-time probability: **{tl['on_time_probability_pct']}%**\n"
+                             f"- Most likely duration: {tl['most_likely_days']:.0f} days "
+                             f"(plan: {tl['baseline_duration_days']} days)\n"
+                             f"- Worst case (P90): {tl['worst_case_days']:.0f} days\n"
+                             f"- Risk level: **{summary['risk_level']}**\n\n"
+                             f"{summary['headline']}\n\n"
+                             f"**What I'd do about it:**\n{actions}")
             tool_used = "Monte_Carlo_Simulator"
             tool_data = sim_res
             response_text = llm_response_text + "\n\n---\n\n**Backend Data:**\n" + backend_text if llm_response_text else backend_text
@@ -168,18 +205,31 @@ Rules:
                 
             if suppliers:
                 top_sup = suppliers[0]
-                backend_text = (f"I found {len(suppliers)} suppliers for **{mat}**.\n\n"
-                                 f"**Top Recommendation (Optimized for {state}):**\n"
-                                 f"**{top_sup['name']}** ({top_sup['tier']})\n"
-                                 f"- Reliability Score: {top_sup['reliability_score']:.2f}\n"
-                                 f"- Lead Time: {top_sup['avg_lead_days']} days\n"
-                                 f"- Location: {top_sup['state']}\n\n"
-                                 f"Would you like me to draft an RFQ (Request for Quotation) to them?")
+                runners_up = "\n".join(
+                    f"- **{s['name']}** — {s['reliability_score']:.0%} reliable, "
+                    f"{s['avg_lead_days']}d lead"
+                    + (f", {s['distance_km']:,} km" if s.get("distance_km") else "")
+                    for s in suppliers[1:3]
+                )
+                distance = (f"\n- Distance to site: {top_sup['distance_km']:,} km"
+                            if top_sup.get("distance_km") else "")
+                backend_text = (f"I found {len(suppliers)} suppliers for **{mat}**, "
+                                f"ranked for delivery into **{state}**.\n\n"
+                                f"**Best fit: {top_sup['name']}** ({top_sup['tier']})\n"
+                                f"- Reliability: {top_sup['reliability_score']:.0%}\n"
+                                f"- Lead time: {top_sup['avg_lead_days']} days"
+                                f"{distance}\n\n"
+                                f"**Backups worth holding:**\n{runners_up}\n\n"
+                                f"Ranking weights reliability first, then distance and lead "
+                                f"time. Ask me to *optimise procurement* and I will work out "
+                                f"how to split the order between the top two.")
                 tool_used = "Supplier_Database"
                 tool_data = {"suppliers_found": len(suppliers), "top_match": top_sup}
                 response_text = llm_response_text + "\n\n---\n\n**Backend Data:**\n" + backend_text if llm_response_text else backend_text
             else:
-                backend_text = f"I couldn't find any suppliers for {mat} in our database. Try a different material or check the Procurement Planner tab."
+                backend_text = (f"I have no suppliers on file for {mat}. Try another material, "
+                                 f"or use the **5 · Plan & Report** tab to plan it against a "
+                                 f"generic regional distributor.")
                 tool_used = "Supplier_Database"
                 tool_data = {"suppliers_found": 0, "material": mat}
                 response_text = llm_response_text + "\n\n---\n\n**Backend Data:**\n" + backend_text if llm_response_text else backend_text
@@ -200,8 +250,12 @@ Rules:
                 state=state,
                 current_month=month,
                 output_dir="reports/generated",
+                models=get_models(),
             )
-            backend_text = f"I have generated the risk report **{rid}**. You can download it from the **Export PDF Report** tab, or find it at: `{report_path}`"
+            backend_text = (f"Report **{rid}** is ready — risk summary, material forecast "
+                             f"and the action list.\n\nDownload it from the "
+                             f"**5 · Plan & Report** tab, or open it directly at "
+                             f"`{report_path}`.")
             tool_used = "Report_Generator"
             tool_data = {"report_path": report_path, "report_id": rid}
             response_text = llm_response_text + "\n\n---\n\n**Backend Data:**\n" + backend_text if llm_response_text else backend_text

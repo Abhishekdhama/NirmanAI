@@ -89,6 +89,30 @@ FESTIVAL_DISRUPTIONS = [
     (12, 25, 4),  # Christmas / Year-end
 ]
 
+# Vehicle class dispatched per material — a heavy trailer behaves differently
+# on a monsoon-hit state highway than a mini truck does.
+VEHICLE_BY_MATERIAL = {
+    "TMT Steel": "Trailer", "Structural Steel": "Trailer",
+    "OPC Cement": "Truck", "River Sand": "Truck",
+    "Coarse Aggregate": "Truck", "Fly Ash Bricks": "Truck",
+    "AAC Blocks": "Truck", "HDPE Pipes": "Container",
+    "Electrical Cable": "Mini Truck", "Vitrified Tiles": "Container",
+    "Plywood": "Container", "Paint": "Mini Truck",
+}
+
+# Effect of each corridor traffic state on delay probability. These are modest,
+# additive contributions — traffic is one input among many.
+#
+# IMPORTANT (why this matters): an earlier version of this dataset carried a
+# traffic_status column in which "Clear" meant 0% delayed and "Heavy" meant 100%
+# delayed. That is a label leak: corridor congestion observed DURING transit is
+# a consequence of the delay, not a feature available when the order is placed.
+# A model trained on it scored a flattering AUC by reading the answer. Here,
+# traffic is forecast for the corridor at order time and contributes a bounded
+# amount of real signal.
+TRAFFIC_EFFECT = {"Clear": -0.05, "Moderate": 0.0, "Detour": 0.08, "Heavy": 0.14}
+
+
 # Monsoon months by intensity
 def monsoon_intensity(month: int) -> float:
     """Returns monsoon disruption factor 0-1 for a given month."""
@@ -177,25 +201,91 @@ def generate_delay_dataset(n_records: int = 5000) -> pd.DataFrame:
             base_delay_rate + np.random.normal(0, 0.08), 0.02, 0.70
         ), 3)
 
-        # ── DELAY CALCULATION (causal model) ──
+        # ── OPERATIONAL CONTEXT (known at order time) ──
+        # Everything below is information a buyer genuinely has before dispatch:
+        # the corridor's traffic forecast, the season's weather, the supplier's
+        # current stock and utilisation. All of it feeds the delay probability
+        # below, so it is causal — never derived from the label.
         m_intensity = monsoon_intensity(month)
+
+        vehicle_type = VEHICLE_BY_MATERIAL.get(material, "Truck")
+        temperature = round(np.clip(
+            34 - m_intensity * 7 + np.random.normal(0, 3.0), 12, 47), 1)
+        humidity = round(np.clip(
+            48 + m_intensity * 40 + np.random.normal(0, 7), 15, 99), 1)
+
+        # Corridor traffic forecast: worse on weak-logistics routes, in monsoon,
+        # and during festival weeks.
+        route_logistics = (orig_props["logistics_score"] + dest_props["logistics_score"]) / 2
+        traffic_weights = np.array([
+            0.45 * route_logistics,                                   # Clear
+            0.35,                                                     # Moderate
+            0.10 + m_intensity * 0.12 + (0.08 if is_festival else 0),  # Detour
+            0.08 + (1 - route_logistics) * 0.30 + m_intensity * 0.10,  # Heavy
+        ])
+        traffic_status = str(np.random.choice(
+            ["Clear", "Moderate", "Detour", "Heavy"],
+            p=traffic_weights / traffic_weights.sum()))
+
+        # Loading/unloading queue at the depot — driven by route quality and
+        # supplier tier, not by whether this order ends up late.
+        waiting_time = int(np.clip(np.random.normal(
+            22 + (1 - route_logistics) * 30 + (1 - sup_props["reliability"]) * 25, 10),
+            3, 120))
+
+        supplier_capacity = int(np.clip(np.random.normal(
+            sup_props["reliability"] * 100, 12), 30, 100))
+        inventory_level = int(np.clip(np.random.normal(
+            560 * sup_props["reliability"] + 120, 190), 30, 1600))
+        asset_utilization = round(np.clip(np.random.normal(
+            72 + (1 - sup_props["reliability"]) * 25, 8), 45, 99), 1)
+        demand_forecast = int(np.clip(np.random.normal(
+            550 + m_intensity * 120, 180), 60, 1400))
+        road_quality = round(np.clip(
+            dest_props["logistics_score"] + np.random.normal(0, 0.06), 0.15, 0.98), 3)
+        fuel_price_index = round(np.clip(np.random.normal(102, 7), 82, 128), 1)
+        driver_experience = int(np.clip(np.random.normal(11, 6), 1, 35))
+        order_value_inr = round(quantity * mat_props["price_per_unit"])
+
+        # ── DELAY CALCULATION (causal model) ──
         monsoon_factor = m_intensity * mat_props["monsoon_sensitive"] * dest_props["monsoon_severity"]
-        logistics_factor = 1 - ((orig_props["logistics_score"] + dest_props["logistics_score"]) / 2)
+        logistics_factor = 1 - route_logistics
         festival_factor = 0.4 if is_festival else 0.0
         distance_factor = min(distance_km / 2000, 0.5)
         reliability_factor = past_delay_rate * 1.5
 
-        # Aggregate delay probability
+        # Operational contributions — deliberately bounded so no single
+        # operational feature can dominate the label.
+        traffic_effect = TRAFFIC_EFFECT[traffic_status]
+        queue_effect = min(waiting_time / 120, 1.0) * 0.18
+        stock_effect = 0.14 if inventory_level < 250 else 0.0
+        capacity_effect = 0.12 if supplier_capacity < 55 else 0.0
+        driver_effect = 0.07 if driver_experience < 4 else 0.0
+
+        # Aggregate delay probability.
+        #
+        # Coefficients are scaled so the population spans a realistic range:
+        # a Tier-1 supplier on a short dry-season haul sits near 5%, a local
+        # supplier crossing the country in peak monsoon during Diwali near 90%.
+        # This matters for more than realism — because the label is a Bernoulli
+        # draw from this probability, the spread of delay_prob sets the
+        # BAYES-OPTIMAL AUC. A narrow band around 50% caps any model, however
+        # good, near 0.69. At this spread the ceiling is ~0.83.
         delay_prob = np.clip(
-            0.10
-            + monsoon_factor * 0.40
-            + logistics_factor * 0.25
-            + festival_factor * 0.25
-            + distance_factor * 0.15
-            + reliability_factor * 0.30
+            -0.55
+            + monsoon_factor * 1.25
+            + logistics_factor * 0.75
+            + festival_factor * 1.00      # festival_factor is 0.4 when active
+            + distance_factor * 0.45
+            + reliability_factor * 0.67   # reliability_factor is rate * 1.5
             + (0.05 if day_of_week >= 5 else 0)  # weekend orders
-            + np.random.normal(0, 0.05),
-            0.02, 0.95
+            + traffic_effect
+            + queue_effect
+            + stock_effect
+            + capacity_effect
+            + driver_effect
+            + np.random.normal(0, 0.04),
+            0.01, 0.97
         )
 
         is_delayed = np.random.random() < delay_prob
@@ -237,6 +327,20 @@ def generate_delay_dataset(n_records: int = 5000) -> pd.DataFrame:
             "delay_probability":    round(delay_prob, 3),
             "is_delayed":           int(is_delayed),
             "actual_delay_days":    actual_delay_days,
+            # Operational context (all known at order time — see comment above)
+            "vehicle_type":         vehicle_type,
+            "temperature":          temperature,
+            "humidity":             humidity,
+            "traffic_status":       traffic_status,
+            "waiting_time":         waiting_time,
+            "inventory_level":      inventory_level,
+            "asset_utilization":    asset_utilization,
+            "demand_forecast":      demand_forecast,
+            "order_value_inr":      order_value_inr,
+            "road_quality":         road_quality,
+            "supplier_capacity":    supplier_capacity,
+            "fuel_price_index":     fuel_price_index,
+            "driver_experience":    driver_experience,
         })
 
     df = pd.DataFrame(records)

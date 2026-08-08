@@ -1,4 +1,42 @@
+import math
 import random
+
+# State capital coordinates, used to compute deterministic inter-state road
+# distances. Previously distances were drawn with random.randint(), so the same
+# route returned a different distance (and cost) on every call.
+STATE_CENTROIDS = {
+    "Maharashtra": (19.0760, 72.8777), "Tamil Nadu": (13.0827, 80.2707),
+    "Karnataka": (12.9716, 77.5946),   "Gujarat": (23.2156, 72.6369),
+    "Rajasthan": (26.9124, 75.7873),   "Uttar Pradesh": (26.8467, 80.9462),
+    "Bihar": (25.5941, 85.1376),       "West Bengal": (22.5726, 88.3639),
+    "Madhya Pradesh": (23.2599, 77.4126), "Telangana": (17.3850, 78.4867),
+    "Kerala": (8.5241, 76.9366),       "Punjab": (30.7333, 76.7794),
+    "Odisha": (20.2961, 85.8245),      "Jharkhand": (23.3441, 85.3096),
+    "Haryana": (29.0588, 76.0856),     "Chhattisgarh": (21.2514, 81.6296),
+    "Andhra Pradesh": (16.5062, 80.6480), "Assam": (26.1445, 91.7362),
+}
+
+# Great-circle distance understates road distance in India; this is the standard
+# road-circuity factor used in freight planning.
+ROAD_CIRCUITY = 1.35
+
+
+def state_distance_km(origin_state: str, destination_state: str) -> int:
+    """Deterministic road-distance estimate between two Indian states."""
+    if origin_state == destination_state:
+        return 120  # typical intra-state haul
+
+    a = STATE_CENTROIDS.get(origin_state)
+    b = STATE_CENTROIDS.get(destination_state)
+    if not a or not b:
+        return 800  # national average haul when a state is unmapped
+
+    lat1, lon1, lat2, lon2 = map(math.radians, (a[0], a[1], b[0], b[1]))
+    dlat, dlon = lat2 - lat1, lon2 - lon1
+    h = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    great_circle = 2 * 6371 * math.asin(math.sqrt(h))
+    return int(round(great_circle * ROAD_CIRCUITY))
+
 
 # --- Curated Supplier Database ---
 # Total 65 suppliers covering major construction materials across Indian states.
@@ -34,7 +72,7 @@ SUPPLIERS = [
     {"name": "Godavari Sand Miners", "material_type": "River Sand", "state": "Telangana", "tier": "Tier 2 (Regional Distributor)", "reliability_score": 0.82, "avg_lead_days": 4, "price_index": 1.10, "capacity_tons_per_month": 10000, "phone": "+91-8876543401", "gst_registered": True},
     {"name": "Narmada Sand Co", "material_type": "River Sand", "state": "Madhya Pradesh", "tier": "Tier 2 (Regional Distributor)", "reliability_score": 0.86, "avg_lead_days": 5, "price_index": 1.05, "capacity_tons_per_month": 12000, "phone": "+91-8876543402", "gst_registered": True},
     {"name": "Ganga River Materials", "material_type": "River Sand", "state": "Uttar Pradesh", "tier": "Tier 1 (Large Manufacturer)", "reliability_score": 0.90, "avg_lead_days": 7, "price_index": 1.12, "capacity_tons_per_month": 25000, "phone": "+91-9876543403", "gst_registered": True},
-    {"name": "Local Sand Mafia", "material_type": "River Sand", "state": "Bihar", "tier": "Tier 3 (Local Supplier)", "reliability_score": 0.65, "avg_lead_days": 2, "price_index": 0.90, "capacity_tons_per_month": 2000, "phone": "+91-7876543404", "gst_registered": False},
+    {"name": "Patna Local Sand Traders (unregistered)", "material_type": "River Sand", "state": "Bihar", "tier": "Tier 3 (Local Supplier)", "reliability_score": 0.65, "avg_lead_days": 2, "price_index": 0.90, "capacity_tons_per_month": 2000, "phone": "+91-7876543404", "gst_registered": False},
     {"name": "Deccan Aggregates", "material_type": "Coarse Aggregate", "state": "Karnataka", "tier": "Tier 2 (Regional Distributor)", "reliability_score": 0.88, "avg_lead_days": 4, "price_index": 1.02, "capacity_tons_per_month": 15000, "phone": "+91-8876543405", "gst_registered": True},
     {"name": "Haryana Crushers", "material_type": "Coarse Aggregate", "state": "Haryana", "tier": "Tier 2 (Regional Distributor)", "reliability_score": 0.84, "avg_lead_days": 3, "price_index": 0.99, "capacity_tons_per_month": 18000, "phone": "+91-8876543406", "gst_registered": True},
     {"name": "Rajputana Stone Crushers", "material_type": "Coarse Aggregate", "state": "Rajasthan", "tier": "Tier 1 (Large Manufacturer)", "reliability_score": 0.92, "avg_lead_days": 6, "price_index": 1.08, "capacity_tons_per_month": 30000, "phone": "+91-9876543407", "gst_registered": True},
@@ -101,24 +139,47 @@ SUPPLIERS = [
 ]
 
 
-def find_suppliers(material_type, destination_state=None, min_reliability=0.0, tier=None):
+def find_suppliers(material_type, destination_state=None, min_reliability=0.0,
+                   tier=None, strict_state=False):
     """
-    Find suppliers matching criteria, sorted by reliability score (descending).
+    Find suppliers for a material, ranked best-first for the given destination.
+
+    `destination_state` is a RANKING signal, not a filter: a supplier 300 km away
+    beats an equally reliable one 1,400 km away, but we never hide the distant
+    one. (This used to hard-filter on `supplier.state == destination_state`,
+    which returned an empty list for every state without a local plant — the
+    common case.) Pass strict_state=True for the old in-state-only behaviour.
+
+    Each returned supplier is annotated with `distance_km` and `fit_score`.
     """
     matches = []
     for s in SUPPLIERS:
         if s["material_type"] != material_type:
             continue
-        if destination_state and s["state"] != destination_state:
-            continue
         if s["reliability_score"] < min_reliability:
             continue
         if tier and s["tier"] != tier:
             continue
-        matches.append(s)
-        
-    # Sort by reliability score
-    matches.sort(key=lambda x: x["reliability_score"], reverse=True)
+        if strict_state and destination_state and s["state"] != destination_state:
+            continue
+
+        entry = dict(s)
+        if destination_state:
+            distance = state_distance_km(s["state"], destination_state)
+            entry["distance_km"] = distance
+            # Reliability dominates; distance and lead time break ties.
+            entry["fit_score"] = round(
+                s["reliability_score"]
+                - min(distance / 2000, 1.0) * 0.15
+                - min(s["avg_lead_days"] / 30, 1.0) * 0.10,
+                4,
+            )
+        else:
+            entry["distance_km"] = None
+            entry["fit_score"] = s["reliability_score"]
+        matches.append(entry)
+
+    matches.sort(key=lambda x: (-x["fit_score"], x["avg_lead_days"]))
     return matches
 
 
@@ -178,14 +239,9 @@ def estimate_shipping_cost(origin_state, destination_state, quantity, material_t
     Returns a dictionary with details.
     """
     base_rate_per_ton_km = 3.5  # INR
-    
-    # Dummy distance calculation
-    if origin_state == destination_state:
-        distance_km = random.randint(50, 200)
-    else:
-        # Cross-state is generally further
-        distance_km = random.randint(300, 1500)
-        
+
+    distance_km = state_distance_km(origin_state, destination_state)
+
     # Bulk discount logic
     discount = 1.0
     if quantity > 5000:
