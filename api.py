@@ -148,31 +148,15 @@ MODELS = {}
 REPORTS_DIR = "reports/generated"
 
 def load_all_models():
-    """Load all trained ML models."""
+    """Load all trained ML models via the shared, fault-tolerant model store."""
     global MODELS
-    try:
-        MODELS = {
-            "clf_delay":   joblib.load("models/delay_classifier.pkl"),
-            "reg_delay":   joblib.load("models/delay_regressor.pkl"),
-            "enc_delay":   joblib.load("models/delay_encoders.pkl"),
-            "feat_delay":  joblib.load("models/delay_features.pkl"),
-            "reg_wast":    joblib.load("models/wastage_regressor.pkl"),
-            "reg_wast_lo": joblib.load("models/wastage_regressor_lo.pkl"),
-            "reg_wast_hi": joblib.load("models/wastage_regressor_hi.pkl"),
-            "enc_wast":    joblib.load("models/wastage_encoders.pkl"),
-            "feat_wast":   joblib.load("models/wastage_features.pkl"),
-        }
-        # Try loading MAPIE conformal model (new CQR), fall back to q_hat
-        try:
-            MODELS["conformal"] = joblib.load("models/delay_conformal.pkl")
-            MODELS["conformal_type"] = "mapie_cqr"
-        except FileNotFoundError:
-            MODELS["conformal"] = joblib.load("models/delay_q_hat.pkl")
-            MODELS["conformal_type"] = "fixed_q_hat"
-        return True
-    except Exception as e:
-        print(f"[WARNING] Could not load models: {e}")
+    from model_store import load_models
+
+    bundle = load_models()
+    if bundle is None:
         return False
+    MODELS = bundle
+    return True
 
 
 @asynccontextmanager
@@ -213,7 +197,7 @@ app.add_middleware(
 
 # ── API Key Auth (simulated for demo) ────────────────────────
 
-DEMO_API_KEY = "nirmanai-demo-key-2026"
+DEMO_API_KEY = os.getenv("NIRMANAI_API_KEY", "nirmanai-demo-key-2026")
 
 async def verify_api_key(x_api_key: str = Header(default=DEMO_API_KEY)):
     """Simple API key verification. In production, use JWT/OAuth2."""

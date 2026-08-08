@@ -1,0 +1,11 @@
+# Debian packages installed by Streamlit Community Cloud before pip.
+# These are WeasyPrint's native dependencies — without them `import weasyprint`
+# fails and the site report exports as HTML instead of PDF. The app handles
+# that gracefully, but the PDF is the better artefact to hand a judge.
+libpango-1.0-0
+libpangoft2-1.0-0
+libharfbuzz0b
+libcairo2
+libgdk-pixbuf-2.0-0
+libffi-dev
+shared-mime-info

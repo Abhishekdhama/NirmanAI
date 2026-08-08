@@ -1,1000 +1,1323 @@
 """
-NirmanAI — Streamlit Dashboard
-==================================
-Full-featured real-time dashboard for construction supply chain intelligence.
-Runs locally: streamlit run app.py
+NirmanAI — Site Supply Risk Console
+===================================
+Streamlit dashboard for construction supply-chain risk.
+
+Run: streamlit run app.py
+
+Every number on screen is produced by the trained models or the simulation
+engine at request time. Where a panel cannot be model-backed (the KAYA
+integration concept), it is labelled as such on the panel itself.
 """
 
-import streamlit as st
-import pandas as pd
+import traceback
+from contextlib import contextmanager
+from datetime import datetime
+
 import numpy as np
+import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import joblib
-import os
-import sys
-from datetime import datetime, timedelta
-import random
+import streamlit as st
 
-# ── Page config ──────────────────────────────────────────────
+import ui
+from demo_data import (
+    MATERIAL_PRICES,
+    STATE_LOGISTICS,
+    build_alerts,
+    build_order_book,
+    build_wastage_forecast,
+    monsoon_intensity,
+    order_book_kpis,
+)
+
 st.set_page_config(
-    page_title="NirmanAI | AI Supply Chain Intelligence",
+    page_title="NirmanAI — Site Supply Risk Console",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+st.markdown(ui.CSS, unsafe_allow_html=True)
 
-# ── Custom CSS ───────────────────────────────────────────────
-st.markdown("""
-<style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-    
-    html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
-    
-    .main { background: #0f1117; }
-    
-    .metric-card {
-        background: linear-gradient(135deg, #1a1d2e 0%, #16213e 100%);
-        border: 1px solid #2a2d3e;
-        border-radius: 12px;
-        padding: 20px;
-        text-align: center;
-        transition: transform 0.2s;
-    }
-    .metric-card:hover { transform: translateY(-2px); }
-    
-    .risk-critical { color: #ff4444; font-weight: 700; }
-    .risk-high     { color: #ff8800; font-weight: 700; }
-    .risk-medium   { color: #ffcc00; font-weight: 600; }
-    .risk-low      { color: #44ff88; font-weight: 600; }
-    
-    .alert-box {
-        background: rgba(255,68,68,0.1);
-        border-left: 4px solid #ff4444;
-        border-radius: 8px;
-        padding: 12px 16px;
-        margin: 8px 0;
-    }
-    .warning-box {
-        background: rgba(255,136,0,0.1);
-        border-left: 4px solid #ff8800;
-        border-radius: 8px;
-        padding: 12px 16px;
-        margin: 8px 0;
-    }
-    .ok-box {
-        background: rgba(68,255,136,0.08);
-        border-left: 4px solid #44ff88;
-        border-radius: 8px;
-        padding: 12px 16px;
-        margin: 8px 0;
-    }
-    
-    h1, h2, h3 { color: #e8eaf6; }
-    
-    .stTabs [data-baseweb="tab"] {
-        font-size: 15px; font-weight: 500; padding: 8px 20px;
-    }
-    
-    div[data-testid="metric-container"] {
-        background: #1a1d2e;
-        border: 1px solid #2a2d3e;
-        border-radius: 10px;
-        padding: 14px;
-    }
-</style>
-""", unsafe_allow_html=True)
+MONTHS = ["January", "February", "March", "April", "May", "June",
+          "July", "August", "September", "October", "November", "December"]
+MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
-# ── Helpers ───────────────────────────────────────────────────
-@st.cache_resource
-def load_models():
-    """Load all trained models once per process. Returns a dict, or None if unavailable."""
+STATES = ["Maharashtra", "Tamil Nadu", "Karnataka", "Gujarat", "Rajasthan",
+          "Uttar Pradesh", "Bihar", "West Bengal", "Madhya Pradesh",
+          "Telangana", "Kerala", "Punjab", "Odisha", "Jharkhand", "Haryana"]
+
+PROJECT_TYPES = ["Residential Apartment", "Commercial Complex", "Industrial Warehouse",
+                 "Road & Highway", "Bridge Construction", "Metro Rail",
+                 "Data Center", "Hospital", "School/College"]
+
+MATERIALS = list(MATERIAL_PRICES.keys())
+
+# Two pre-wired scenarios. The contrast between them is the demo: identical
+# product, opposite risk picture, driven entirely by the model.
+SCENARIOS = {
+    "Monsoon crunch — Patna, Bihar (July)": dict(
+        project_name="Ganga Riverside — Tower B", project_type="Residential Apartment",
+        state="Bihar", project_size=12000, month=7,
+        workforce_skill="Semi-skilled", supervision="Poor", contractor_exp=4,
+    ),
+    "Dry season — Ahmedabad, Gujarat (February)": dict(
+        project_name="Sabarmati Tech Park — Phase 1", project_type="Commercial Complex",
+        state="Gujarat", project_size=25000, month=2,
+        workforce_skill="Skilled", supervision="Good", contractor_exp=15,
+    ),
+    "Festival window — Lucknow, UP (October)": dict(
+        project_name="Gomti Nagar Metro — Depot", project_type="Metro Rail",
+        state="Uttar Pradesh", project_size=40000, month=10,
+        workforce_skill="Skilled", supervision="Average", contractor_exp=9,
+    ),
+}
+
+
+# ══════════════════════════════════════════════════════════════
+# Infrastructure: model loading, caching, error containment
+# ══════════════════════════════════════════════════════════════
+
+@st.cache_resource(show_spinner="Loading NirmanAI models…")
+def get_models():
+    from model_store import load_models
+    return load_models()
+
+
+@contextmanager
+def safe_panel(what: str):
+    """
+    Contain a failure to one panel instead of blanking the whole page.
+
+    A hackathon demo that shows a red traceback is over. This keeps the rest of
+    the dashboard usable and tells the user exactly what to do.
+    """
     try:
-        models = {
-            "clf_delay":   joblib.load("models/delay_classifier.pkl"),
-            "reg_delay":   joblib.load("models/delay_regressor.pkl"),
-            "enc_delay":   joblib.load("models/delay_encoders.pkl"),
-            "feat_delay":  joblib.load("models/delay_features.pkl"),
-            "reg_wast":    joblib.load("models/wastage_regressor.pkl"),
-            "reg_wast_lo": joblib.load("models/wastage_regressor_lo.pkl"),
-            "reg_wast_hi": joblib.load("models/wastage_regressor_hi.pkl"),
-            "enc_wast":    joblib.load("models/wastage_encoders.pkl"),
-            "feat_wast":   joblib.load("models/wastage_features.pkl"),
-        }
-        try:
-            models["conformal"] = joblib.load("models/delay_conformal.pkl")
-        except FileNotFoundError:
-            models["conformal"] = joblib.load("models/delay_q_hat.pkl")
-        return models
-    except Exception:
-        return None
+        yield
+    except Exception as exc:
+        st.error(f"**{what} is unavailable.** {type(exc).__name__}: {exc}")
+        with st.expander("Technical details"):
+            st.code(traceback.format_exc(), language="text")
+        st.caption("Everything else on this page still works. "
+                   "Re-run `python setup.py` if this persists.")
 
-def monsoon_intensity(month):
-    profile = {1:0.0,2:0.0,3:0.0,4:0.05,5:0.15,
-               6:0.7,7:0.9,8:0.85,9:0.6,10:0.2,11:0.05,12:0.0}
-    return profile.get(month, 0.0)
 
-# Mock data for when models aren't loaded yet
-def get_mock_deliveries():
-    materials = ["TMT Steel","OPC Cement","River Sand","Structural Steel",
-                 "Fly Ash Bricks","HDPE Pipes","Electrical Cable","Vitrified Tiles"]
-    suppliers = ["JSW Steel - Bellary","ACC Cement - Rajasthan",
-                 "Ambuja Cement - Gujarat","Tata Steel - Jharkhand",
-                 "Local Supplier - Patna","Regional Dist. - Lucknow"]
-    states = ["Maharashtra","Tamil Nadu","Bihar","Uttar Pradesh",
-              "Rajasthan","Karnataka","West Bengal","Kerala"]
-    random.seed(42)
-    rows = []
-    for i in range(18):
-        mat  = random.choice(materials)
-        orig = random.choice(states)
-        dest = random.choice(states)
-        risk = random.choices(["Critical","High","Medium","Low"],
-                              weights=[0.15,0.25,0.35,0.25])[0]
-        prob = {"Critical":0.88,"High":0.67,"Medium":0.42,"Low":0.15}[risk]
-        days = {"Critical":random.randint(8,18),"High":random.randint(4,9),
-                "Medium":random.randint(1,5),"Low":0}[risk]
-        color= {"Critical":"🔴","High":"🟠","Medium":"🟡","Low":"🟢"}[risk]
-        rows.append({
-            "Status": color,
-            "Material":   mat,
-            "Supplier":   random.choice(suppliers),
-            "Route":      f"{orig} → {dest}",
-            "Risk":       risk,
-            "Delay Prob": f"{prob:.0%}",
-            "Est. Delay": f"{days} days" if days else "On time",
-            "Order Value":f"₹{random.randint(2,80)*10000:,}",
-        })
-    return pd.DataFrame(rows)
+@st.cache_data(show_spinner=False, ttl=600)
+def cached_order_book(state: str, month: int, project_name: str, models_ready: bool):
+    return build_order_book(get_models() if models_ready else None,
+                            state, month, project_name)
 
-def get_mock_wastage():
-    data = [
-        {"Material":"OPC Cement","Blueprint":500,"Estimated":573,"Wastage %":14.6,"Category":"Medium","Overrun":"₹27,740"},
-        {"Material":"River Sand","Blueprint":300,"Estimated":378,"Wastage %":26.0,"Category":"High","Overrun":"₹1,40,400"},
-        {"Material":"TMT Steel", "Blueprint":80, "Estimated":84, "Wastage %":5.0, "Category":"Low","Overrun":"₹2,48,000"},
-        {"Material":"Fly Ash Bricks","Blueprint":25000,"Estimated":29250,"Wastage %":17.0,"Category":"High","Overrun":"₹34,000"},
-        {"Material":"Vitrified Tiles","Blueprint":1200,"Estimated":1308,"Wastage %":9.0,"Category":"Medium","Overrun":"₹70,200"},
-        {"Material":"Plywood","Blueprint":800,"Estimated":992,"Wastage %":24.0,"Category":"High","Overrun":"₹18,240"},
+
+@st.cache_data(show_spinner=False, ttl=600)
+def cached_wastage(materials_qty: dict, ctx: dict, models_ready: bool):
+    return build_wastage_forecast(get_models() if models_ready else None,
+                                  materials_qty, ctx)
+
+
+@st.cache_data(show_spinner=False, ttl=600)
+def cached_simulation(project_type: str, state: str, month: int, n: int, models_ready: bool):
+    from simulation_engine import run_simulation
+    return run_simulation(project_type, state, month, n,
+                          models=get_models() if models_ready else None)
+
+
+@st.cache_data(show_spinner=False, ttl=600)
+def cached_monthly_curve(state: str, models_ready: bool):
+    """
+    Average delay probability by month for this state, scored by the model.
+
+    Replaces what used to be a hardcoded list of twelve numbers that never
+    changed when you changed the state.
+    """
+    from demo_data import build_order_book as _book
+    models = get_models() if models_ready else None
+    return [
+        float(_book(models, state, m, "seasonality-probe", n_orders=12)
+              ["delay_probability"].mean())
+        for m in range(1, 13)
     ]
-    return pd.DataFrame(data)
 
-# ── HEADER ────────────────────────────────────────────────────
-col_logo, col_title, col_status = st.columns([1, 5, 2])
-with col_logo:
-    st.markdown("## 🏗️")
-with col_title:
-    st.markdown("# NirmanAI")
-    st.markdown("<p style='color:#8892b0;margin-top:-12px;'>AI Supply Chain Intelligence for Indian Construction</p>",
-                unsafe_allow_html=True)
-with col_status:
-    models = load_models()
-    models_ok = models is not None
-    if models_ok:
-        st.success("✅ Models Loaded")
-    else:
-        st.warning("⚠️ Demo Mode (Run setup.py first)")
 
-st.markdown("---")
+def fmt_inr(value: float) -> str:
+    """
+    Headline format: crore / lakh, the way an Indian finance team says a number
+    out loud. Use for single KPI tiles only — see fmt_inr_full for tables.
+    """
+    value = float(value)
+    if abs(value) >= 1e7:
+        return f"₹{value / 1e7:.2f} Cr"
+    if abs(value) >= 1e5:
+        return f"₹{value / 1e5:.2f} L"
+    return f"₹{value:,.0f}"
 
-# ── SIDEBAR ───────────────────────────────────────────────────
+
+def fmt_inr_full(value: float) -> str:
+    """
+    Table format: full rupees with Indian digit grouping (₹2,50,431).
+
+    Columns must use ONE unit. Mixing "₹76,529" and "₹2.50 L" in the same column
+    means the reader has to convert in their head to tell which row is bigger,
+    which defeats the point of a table.
+    """
+    value = float(value)
+    sign = "-" if value < 0 else ""
+    digits = f"{abs(value):.0f}"
+    if len(digits) <= 3:
+        return f"{sign}₹{digits}"
+    # Last three digits, then groups of two (Indian lakh/crore convention)
+    head, tail = digits[:-3], digits[-3:]
+    groups = []
+    while len(head) > 2:
+        groups.insert(0, head[-2:])
+        head = head[:-2]
+    if head:
+        groups.insert(0, head)
+    return f"{sign}₹{','.join(groups)},{tail}"
+
+
+MODELS = get_models()
+MODELS_READY = MODELS is not None
+METRICS = (MODELS or {}).get("metrics", {}) or {}
+
+
+# ══════════════════════════════════════════════════════════════
+# Sidebar — the single input surface
+# ══════════════════════════════════════════════════════════════
+
 with st.sidebar:
-    st.markdown("### 📋 Project Context")
-    project_name = st.text_input("Project Name", "Prestige Heights — Phase 2")
-    project_type = st.selectbox("Project Type", [
-        "Residential Apartment","Commercial Complex","Industrial Warehouse",
-        "Road & Highway","Bridge Construction","Metro Rail","Data Center","Hospital"
-    ])
-    state = st.selectbox("Project State", [
-        "Maharashtra","Tamil Nadu","Karnataka","Gujarat","Rajasthan",
-        "Uttar Pradesh","Bihar","West Bengal","Madhya Pradesh","Telangana",
-        "Kerala","Punjab","Odisha","Jharkhand","Haryana"
-    ])
-    project_size = st.slider("Project Size (sq ft)", 1000, 50000, 8000, 500)
-    current_month = st.slider("Current Month", 1, 12, datetime.now().month)
+    st.markdown('<div class="sidebar-heading">Start here</div>', unsafe_allow_html=True)
+    scenario = st.selectbox(
+        "Load a project", list(SCENARIOS.keys()),
+        help="Pre-configured sites. Everything below stays editable — "
+             "change the state or month and every prediction on the page re-runs.",
+    )
+    preset = SCENARIOS[scenario]
 
-    st.markdown("---")
-    st.markdown("### 🌧️ Site Conditions")
-    workforce_skill = st.selectbox("Workforce Skill", ["Unskilled","Semi-skilled","Skilled","Expert"])
-    supervision     = st.selectbox("Supervision Quality", ["Poor","Average","Good","Excellent"])
-    contractor_exp  = st.slider("Contractor Experience (yrs)", 1, 30, 8)
+    st.markdown('<div class="sidebar-heading">Project</div>', unsafe_allow_html=True)
+    project_name = st.text_input("Project name", preset["project_name"])
+    project_type = st.selectbox("Project type", PROJECT_TYPES,
+                                index=PROJECT_TYPES.index(preset["project_type"]))
+    state = st.selectbox("Site location (state)", STATES,
+                         index=STATES.index(preset["state"]),
+                         help="Drives logistics quality, monsoon severity and "
+                              "haulage distance from every supplier.")
+    project_size = st.slider("Built-up area (sq ft)", 1000, 60000,
+                             preset["project_size"], 1000)
+    month_name = st.selectbox("Procurement month", MONTHS, index=preset["month"] - 1,
+                              help="The single biggest driver of delivery risk in India.")
+    current_month = MONTHS.index(month_name) + 1
 
-    st.markdown("---")
+    st.markdown('<div class="sidebar-heading">Site conditions</div>', unsafe_allow_html=True)
+    workforce_skill = st.selectbox("Workforce skill", ["Unskilled", "Semi-skilled", "Skilled", "Expert"],
+                                   index=["Unskilled", "Semi-skilled", "Skilled", "Expert"]
+                                   .index(preset["workforce_skill"]))
+    supervision = st.selectbox("Supervision quality", ["Poor", "Average", "Good", "Excellent"],
+                               index=["Poor", "Average", "Good", "Excellent"]
+                               .index(preset["supervision"]))
+    contractor_exp = st.slider("Contractor experience (years)", 1, 30,
+                               preset["contractor_exp"])
+
     m_int = monsoon_intensity(current_month)
-    if m_int > 0.6:
-        st.markdown(f"🌧️ **Monsoon Alert**: Intensity {m_int:.0%}")
-    else:
-        st.markdown(f"☀️ Weather: Normal (Monsoon {m_int:.0%})")
+    logistics = STATE_LOGISTICS.get(state, 0.6)
+    st.markdown("---")
+    weather_icon = "🌧️" if m_int > 0.6 else "🌦️" if m_int > 0.2 else "☀️"
+    festival = ("<br>Festival shutdown window"
+                if current_month in (10, 11) else "")
+    # Built as one line per element: Streamlit runs this through a markdown
+    # parser first, and indented newlines inside a <p> make it close the tag
+    # early, leaving a literal "</p>" visible in the sidebar.
+    st.markdown(
+        f'<div class="panel" style="margin:0;">'
+        f'<p class="panel-title">{weather_icon} {month_name} conditions</p>'
+        f'<p class="panel-note">'
+        f'Monsoon intensity <b style="color:var(--amber)">{m_int:.0%}</b><br>'
+        f'{state} logistics index <b style="color:var(--amber)">{logistics:.2f}</b>'
+        f'{festival}</p></div>',
+        unsafe_allow_html=True,
+    )
 
-# ── KPI ROW ───────────────────────────────────────────────────
-def kpi_card(value, label, sub, value_color="#4fc3f7", sub_color="#8892b0"):
-    return f"""
-    <div class="metric-card">
-        <h3 style="color:{value_color};margin:0;font-size:28px;">{value}</h3>
-        <p style="color:#e8eaf6;margin:6px 0 0;font-size:13px;font-weight:600;">{label}</p>
-        <p style="color:{sub_color};margin:2px 0 0;font-size:11px;">{sub}</p>
-    </div>"""
+PROJECT_CTX = dict(
+    project_type=project_type, state=state, project_size=project_size,
+    month=current_month, contractor_exp=contractor_exp,
+    workforce_skill=workforce_skill, supervision=supervision,
+)
 
-kpis = [
-    ("23",     "📦 Active Orders",      "+3 this week",        "#4fc3f7", "#44ff88"),
-    ("7",      "⚠️ At-Risk Deliveries", "↑ 2 from last week",  "#ff8800", "#ff8800"),
-    ("3",      "🔴 Critical Alerts",    "Action needed",       "#ff4444", "#ff4444"),
-    ("₹18.4L", "💰 Projected Overrun",  "vs ₹12L baseline",    "#ffcc00", "#8892b0"),
-    ("13.2%",  "📉 Avg Wastage Est.",   "Industry: 20-30%",    "#44ff88", "#8892b0"),
-]
-for col, (val, label, sub, vc, sc) in zip(st.columns(5), kpis):
-    with col:
-        st.markdown(kpi_card(val, label, sub, vc, sc), unsafe_allow_html=True)
 
-st.markdown("---")
+# ══════════════════════════════════════════════════════════════
+# Masthead
+# ══════════════════════════════════════════════════════════════
 
-# ── TABS ─────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-    "📡 Live Delivery Monitor",
-    "📦 Wastage Intelligence",
-    "🔮 Predict New Order",
-    "📊 Analytics & Insights",
-    "📋 Smart Procurement Plan",
-    "📈 Simulation Engine",
-    "🤖 Agentic Assistant",
-    "📄 Export PDF Report"
+if MODELS_READY:
+    auc = METRICS.get("auc")
+    chips = (
+        f'<span class="chip chip-live">● Models live</span>'
+        f'<span class="chip">XGBoost + LightGBM</span>'
+        + (f'<span class="chip">AUC {auc:.3f}</span>' if auc else "")
+        + '<span class="chip">Conformal intervals</span>'
+        '<span class="chip">SHAP per order</span>'
+    )
+else:
+    chips = ('<span class="chip chip-warn">⚠ Heuristic mode</span>'
+             '<span class="chip">Run <code>python setup.py</code> to train</span>')
+
+st.markdown(ui.masthead(chips), unsafe_allow_html=True)
+
+if not MODELS_READY:
+    st.warning(
+        "**Trained models not found — the dashboard is running on a transparent "
+        "rule-based fallback.** Every figure below is still computed live, but it is "
+        "not a model output. Run `python setup.py` (about two minutes) to train them.",
+        icon="⚠️",
+    )
+
+# Scored order book drives the masthead proof line and the whole first tab.
+order_book = pd.DataFrame()
+kpis = order_book_kpis(order_book)
+with safe_panel("The live order book"):
+    order_book = cached_order_book(state, current_month, project_name, MODELS_READY)
+    kpis = order_book_kpis(order_book)
+
+if kpis["total"]:
+    risk_line = (
+        f"<strong>{kpis['at_risk']} of {kpis['total']}</strong> open orders are more likely "
+        f"than not to arrive late, putting <strong>{fmt_inr(kpis['value_at_risk'])}</strong> "
+        f"and <strong>{kpis['exposed_days']:.0f} crew-days</strong> at risk."
+    )
+else:
+    risk_line = "Select a project in the sidebar to score its open orders."
+
+if MODELS_READY and METRICS.get("bayes_ceiling_auc"):
+    proof_line = (
+        f"AUC <strong>{METRICS['auc']:.3f}</strong> against a theoretical ceiling of "
+        f"{METRICS['bayes_ceiling_auc']:.3f} — <strong>"
+        f"{METRICS['signal_captured_pct']:.0f}%</strong> of the learnable signal. "
+        f"Intervals are conformal, with {METRICS.get('conformal_empirical_coverage_pct', 90):.0f}% "
+        "measured coverage."
+    )
+else:
+    proof_line = ("Every prediction ships with a calibrated interval and the SHAP factors "
+                  "the model actually used — no unexplained scores.")
+
+st.markdown(ui.premise_band(risk_line, proof_line), unsafe_allow_html=True)
+
+with st.expander("📐 How this works, and what is real — the honest version"):
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(f"""
+**The models**
+
+- **Delay classifier** — XGBoost, {METRICS.get('n_training_rows', 5000):,} orders,
+  38 features. Test AUC **{METRICS.get('auc', 0):.3f}**.
+- **Delay magnitude** — LightGBM quantile regressor, MAE
+  **{METRICS.get('regressor_mae_days', 0):.1f} days** on late orders.
+- **Uncertainty** — conformal prediction, target 90% coverage,
+  **{METRICS.get('conformal_empirical_coverage_pct', 0):.1f}%** measured on held-out data.
+- **Wastage** — LightGBM regressor plus 10th/90th percentile quantile models.
+- **Explanations** — SHAP TreeExplainer, computed per order, not a rule list.
+
+Delivery outcomes are partly random, so no classifier can reach AUC 1.0. The
+**Bayes-optimal ceiling here is {METRICS.get('bayes_ceiling_auc', 0):.3f}** — we
+report it next to our score rather than quoting an impressive-sounding number
+without context.
+        """)
+    with c2:
+        st.markdown("""
+**What is synthetic, and what is not**
+
+- **Purchase orders are synthetic.** We have no ERP to read from. They are
+  generated deterministically from the project you pick, then scored by the
+  real models — change the state or month and every row re-scores.
+- **Suppliers are a curated database** of 71 real Indian material suppliers
+  with hand-assigned reliability and lead times. Distances are computed from
+  state-capital coordinates, not invented per call.
+- **Training data is synthetic**, generated from published benchmarks (CIDC
+  wastage ranges, IMD monsoon profiles, state logistics indices, the festival
+  calendar). The relationships are domain knowledge; the rows are not real
+  procurement records. We do not claim otherwise.
+- **The KAYA Jarvis panel is an integration concept**, clearly labelled, and
+  is the only non-live element in this dashboard.
+        """)
+
+st.markdown("")
+
+
+# ══════════════════════════════════════════════════════════════
+# Tabs — numbered to make the intended path obvious
+# ══════════════════════════════════════════════════════════════
+
+tab_radar, tab_order, tab_waste, tab_sim, tab_plan, tab_agent = st.tabs([
+    "1 · Risk Radar",
+    "2 · Check an Order",
+    "3 · Wastage & Cost",
+    "4 · Project Simulator",
+    "5 · Plan & Report",
+    "🤖 Ask Jarvis",
 ])
 
-# ═══════════════════════════════════════════
-# TAB 1: LIVE DELIVERY MONITOR
-# ═══════════════════════════════════════════
-with tab1:
-    st.markdown("### Active Delivery Orders — Risk Dashboard")
-    st.caption(f"Project: **{project_name}** | Last updated: {datetime.now().strftime('%d %b %Y, %H:%M')}")
 
-    # Critical alerts banner
-    st.markdown("""
-    <div class="alert-box">
-        🔴 <strong>CRITICAL:</strong> River Sand from Rajasthan is at 91% delay risk — 
-        heavy monsoon on NH-48 + supplier has 52% historical delay rate. 
-        <strong>Action: Contact alternate supplier immediately.</strong>
-    </div>
-    <div class="alert-box">
-        🔴 <strong>CRITICAL:</strong> TMT Steel (Jharkhand → Bihar) — 
-        84% delay risk. Truck strike reported on NH-30. Est. delay: 11 days.
-    </div>
-    <div class="warning-box">
-        🟠 <strong>HIGH RISK:</strong> Fly Ash Bricks order overlaps with Diwali shutdown window. 
-        Recommend reordering now or scheduling post-festival.
-    </div>
-    """, unsafe_allow_html=True)
+# ══════════════════════════════════════════════════════════════
+# 1 · RISK RADAR
+# ══════════════════════════════════════════════════════════════
 
-    st.markdown("")
+with tab_radar:
+    st.markdown(ui.section(
+        "Step 1", "Risk Radar",
+        f"Every open purchase order for <b>{project_name}</b>, scored by the delay model "
+        f"for {month_name} conditions in {state}."), unsafe_allow_html=True)
 
-    # Delivery table
-    df_del = get_mock_deliveries()
+    if order_book.empty:
+        st.markdown(ui.empty_state(
+            "📭", "No orders to score",
+            "Pick a project in the sidebar to generate and score its order book."),
+            unsafe_allow_html=True)
+    else:
+      with safe_panel("The Risk Radar"):
+        avg_p = kpis["avg_delay_prob"]
+        tiles = [
+            ("Open orders", f"{kpis['total']}", f"{project_type} · {state}", "#eef2f9"),
+            ("Likely to slip", f"{kpis['at_risk']}",
+             f"{kpis['at_risk'] / kpis['total']:.0%} of the book", ui.RISK_COLORS["High"]),
+            ("Critical", f"{kpis['critical']}",
+             "≥75% delay probability", ui.RISK_COLORS["Critical"]),
+            ("Value at risk", fmt_inr(kpis["value_at_risk"]),
+             "Order value on at-risk POs", ui.RISK_COLORS["Medium"]),
+            ("Schedule exposure", f"{kpis['exposed_days']:.0f} d",
+             "Probability-weighted crew-days", ui.RISK_COLORS["High"]
+             if kpis["exposed_days"] > 40 else ui.RISK_COLORS["Low"]),
+        ]
+        for col, (label, value, sub, color) in zip(st.columns(5), tiles):
+            col.markdown(ui.kpi(label, value, sub, color), unsafe_allow_html=True)
 
-    def color_risk(val):
-        colors = {"Critical":"background-color:#ff444430",
-                  "High":"background-color:#ff880025",
-                  "Medium":"background-color:#ffcc0020",
-                  "Low":"background-color:#44ff8815"}
-        return colors.get(val, "")
+        st.markdown(ui.why(
+            "<b>Schedule exposure</b> is the sum of (delay probability × expected days late) "
+            "across every order — the crew-days you should expect to lose this month if you "
+            "change nothing. It is the number that converts risk into money."),
+            unsafe_allow_html=True)
 
-    st.dataframe(
-        df_del.style.map(color_risk, subset=["Risk"]),
-        use_container_width=True, height=420
-    )
+        alerts = build_alerts(order_book, top_n=3)
+        if alerts:
+            st.markdown(f"#### ⚠️ Act on these {len(alerts)} first")
+            for a in alerts:
+                st.markdown(ui.alert_card(a), unsafe_allow_html=True)
+        else:
+            st.success(
+                f"**No high-risk orders.** In {month_name}, {state}'s logistics conditions "
+                f"put every open order below the 55% delay threshold. Average risk across "
+                f"the book is {avg_p:.0%}.", icon="✅")
 
-    # Risk distribution pie
-    col_pie, col_timeline = st.columns(2)
-    with col_pie:
-        risk_counts = df_del["Risk"].value_counts()
-        fig_pie = px.pie(
-            values=risk_counts.values,
-            names=risk_counts.index,
-            title="Delivery Risk Distribution",
-            color=risk_counts.index,
-            color_discrete_map={"Critical":"#ff4444","High":"#ff8800",
-                                "Medium":"#ffcc00","Low":"#44ff88"},
-            hole=0.45
-        )
-        fig_pie.update_layout(
-            paper_bgcolor="#1a1d2e", plot_bgcolor="#1a1d2e",
-            font_color="#e8eaf6", title_font_size=15
-        )
-        st.plotly_chart(fig_pie, use_container_width=True)
-
-    with col_timeline:
-        # Monsoon intensity timeline
-        months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
-        intensities = [monsoon_intensity(m) for m in range(1,13)]
-        fig_mon = go.Figure()
-        fig_mon.add_trace(go.Scatter(
-            x=months, y=[i*100 for i in intensities],
-            fill="tozeroy", name="Monsoon Intensity",
-            line=dict(color="#4fc3f7", width=2),
-            fillcolor="rgba(79,195,247,0.2)"
-        ))
-        fig_mon.add_vline(x=current_month-1, line_dash="dash",
-                          line_color="#ff8800", annotation_text="Now")
-        fig_mon.update_layout(
-            title="Monsoon Disruption Risk — Annual Pattern",
-            xaxis_title="Month", yaxis_title="Intensity (%)",
-            paper_bgcolor="#1a1d2e", plot_bgcolor="#1a1d2e",
-            font_color="#e8eaf6", title_font_size=15,
-            yaxis=dict(range=[0,100]), showlegend=False
-        )
-        st.plotly_chart(fig_mon, use_container_width=True)
-
-    # KAYA integration preview (Pitch Deck Slide 9)
-    st.markdown("---")
-    st.markdown("### 🔗 KAYA AI Integration Preview")
-    st.markdown("""
-    <div style="background:#1a1d2e;border:1px solid #2a2d3e;border-radius:12px;padding:20px;">
-        <p style="color:#4fc3f7;font-weight:600;margin:0;">KAYA Jarvis — Proactive Supplier Outreach</p>
-        <p style="color:#8892b0;font-size:13px;margin:8px 0 16px;">
-            Powered by NirmanAI Risk Intelligence
-        </p>
-        <div style="background:#0f1117;border-radius:8px;padding:14px;margin-bottom:10px;">
-            🤖 <strong style="color:#e8eaf6;">Jarvis (automated)</strong>
-            <span style="color:#8892b0;font-size:12px;"> · just now</span><br>
-            <span style="color:#cdd6e4;font-size:13px;">
-            "NirmanAI flagged your TMT Steel order (Jharkhand → Bihar) at 84% delay risk.
-            I've already contacted 2 alternate suppliers and scheduled a callback for 3pm today.
-            Estimated delay prevented: 11 days."
-            </span>
-        </div>
-        <div style="background:#0f1117;border-radius:8px;padding:14px;">
-            🤖 <strong style="color:#e8eaf6;">Jarvis (automated)</strong>
-            <span style="color:#8892b0;font-size:12px;"> · 2 hours ago</span><br>
-            <span style="color:#cdd6e4;font-size:13px;">
-            "River Sand delivery from Rajasthan — NirmanAI predicts 91% chance of
-            12-day delay due to monsoon on NH-48. Recommend: split order across
-            Madhya Pradesh supplier. Saving ₹1.2L in idle labor cost."
-            </span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-# ═══════════════════════════════════════════
-# TAB 2: WASTAGE INTELLIGENCE
-# ═══════════════════════════════════════════
-with tab2:
-    st.markdown(f"### Material Wastage Forecast — {project_name}")
-    st.caption(f"Workforce: **{workforce_skill}** | Supervision: **{supervision}** | Month: **{current_month}**")
-
-    df_wast = get_mock_wastage()
-
-    col_wt, col_wc = st.columns(2)
-
-    with col_wt:
-        st.markdown("#### Per-Material Wastage Estimates")
-
-        def color_cat(val):
-            return {"High":"background-color:#ff444330",
-                    "Medium":"background-color:#ffcc0020",
-                    "Low":"background-color:#44ff8815"}.get(val,"")
+        st.markdown("#### Full order book")
+        display = order_book.copy()
+        display["Risk"] = display["risk_label"]
+        # ProgressColumn formats the raw value, so a 0-1 probability with a
+        # "%.0f%%" format renders 0.87 as "1%". Store it as 0-100.
+        display["Delay risk"] = display["delay_probability"] * 100
+        display["If late"] = display["conditional_delay_days"].map(lambda d: f"{d:.0f} d")
+        display["90% interval"] = display.apply(
+            lambda r: ui.format_interval(r["ci_lower"], r["ci_upper"]), axis=1)
+        display["Value"] = display["order_value_inr"].map(fmt_inr_full)
+        display["Top driver"] = display["top_risk_factors"].map(
+            lambda f: f[0] if f else "—")
+        table = display[["po_id", "material", "supplier", "route", "distance_km",
+                         "Risk", "Delay risk", "If late", "90% interval", "Value",
+                         "Top driver"]].rename(columns={
+                             "po_id": "PO", "material": "Material", "supplier": "Supplier",
+                             "route": "Route", "distance_km": "km"})
 
         st.dataframe(
-            df_wast.style.map(color_cat, subset=["Category"]),
-            use_container_width=True, height=300
+            table,
+            use_container_width=True, hide_index=True, height=420,
+            column_config={
+                "Delay risk": st.column_config.ProgressColumn(
+                    "Delay risk", format="%.0f%%", min_value=0, max_value=100),
+                "km": st.column_config.NumberColumn("km", format="%d"),
+            },
         )
+        st.caption("Sorted by risk. Every row is a live model call — the driver column is "
+                   "the top positive SHAP contributor for that specific order.")
 
-        total_overrun = 1_40_400 + 34_000 + 2_48_000 + 70_200 + 18_240 + 27_740
-        st.error(f"💸 **Total Projected Cost Overrun: ₹{total_overrun:,.0f}**")
-        st.info("💡 Improving supervision from **Poor → Good** would reduce overrun by ~35%")
+        col_a, col_b = st.columns(2)
+        with col_a:
+            with safe_panel("The risk mix chart"):
+                counts = order_book["risk_label"].value_counts()
+                ordered = [r for r in ["Critical", "High", "Medium", "Low"] if r in counts]
+                fig = go.Figure(go.Pie(
+                    labels=ordered, values=[counts[r] for r in ordered], hole=0.58,
+                    marker=dict(colors=[ui.RISK_COLORS[r] for r in ordered],
+                                line=dict(color="#131823", width=2)),
+                    textinfo="label+value", textfont=dict(size=12),
+                ))
+                fig.add_annotation(text=f"<b>{kpis['total']}</b><br>orders",
+                                   showarrow=False, font=dict(size=15, color="#eef2f9"))
+                ui.apply_plot_theme(fig, height=330, title="Risk mix across the order book")
+                fig.update_layout(showlegend=False)
+                st.plotly_chart(fig, use_container_width=True)
 
-    with col_wc:
-        # Wastage bar chart
-        fig_wast = go.Figure()
-        colors = ["#ff4444" if c=="High" else "#ffcc00" if c=="Medium" else "#44ff88"
-                  for c in df_wast["Category"]]
-        fig_wast.add_trace(go.Bar(
-            x=df_wast["Material"],
-            y=df_wast["Wastage %"],
-            marker_color=colors,
-            text=[f"{w}%" for w in df_wast["Wastage %"]],
-            textposition="outside"
-        ))
-        fig_wast.add_hline(y=5,  line_dash="dot", line_color="#44ff88",
-                           annotation_text="Low threshold (5%)")
-        fig_wast.add_hline(y=15, line_dash="dot", line_color="#ff4444",
-                           annotation_text="High threshold (15%)")
-        fig_wast.update_layout(
-            title="Estimated Wastage % by Material",
-            xaxis_title="", yaxis_title="Wastage (%)",
-            paper_bgcolor="#1a1d2e", plot_bgcolor="#1a1d2e",
-            font_color="#e8eaf6", title_font_size=15,
-            xaxis_tickangle=-30
-        )
-        st.plotly_chart(fig_wast, use_container_width=True)
+        with col_b:
+            with safe_panel("The seasonality chart"):
+                curve = cached_monthly_curve(state, MODELS_READY)
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=MONTH_ABBR, y=[p * 100 for p in curve],
+                    mode="lines+markers", fill="tozeroy",
+                    line=dict(color=ui.RISK_COLORS["High"], width=2.5, shape="spline"),
+                    fillcolor="rgba(255,140,26,0.13)",
+                    marker=dict(size=7, color=[
+                        ui.RISK_COLORS["Critical"] if p > 0.6 else
+                        ui.RISK_COLORS["High"] if p > 0.45 else
+                        ui.RISK_COLORS["Medium"] if p > 0.3 else ui.RISK_COLORS["Low"]
+                        for p in curve]),
+                    hovertemplate="%{x}: %{y:.0f}% avg delay risk<extra></extra>",
+                ))
+                fig.add_vline(x=current_month - 1, line_dash="dot",
+                              line_color="rgba(255,255,255,0.45)",
+                              annotation_text="You are here",
+                              annotation_font_size=11)
+                ui.apply_plot_theme(fig, height=330,
+                                    title=f"When to buy in {state} — model-scored by month")
+                fig.update_layout(yaxis=dict(title="Avg delay probability (%)",
+                                             range=[0, 100],
+                                             gridcolor="rgba(255,255,255,0.06)"),
+                                  showlegend=False)
+                st.plotly_chart(fig, use_container_width=True)
+                st.caption(f"Each point re-scores a 12-order basket for {state} in that "
+                           "month. The shape is the model's, not a drawn curve.")
 
-    # Scenario analysis
-    st.markdown("#### 🔄 Scenario Analysis — Impact of Better Supervision")
-    scenario_data = {
-        "Scenario": ["Current (Poor supervision)","Good supervision","Excellent supervision"],
-        "Sand Wastage %": [26.0, 18.0, 12.0],
-        "Cement Wastage %": [14.6, 10.0, 7.0],
-        "Total Overrun ₹": [538_580, 320_000, 185_000],
-    }
-    st.dataframe(pd.DataFrame(scenario_data), use_container_width=True)
+    with st.expander("🔗 KAYA Jarvis integration — concept, not live"):
+        st.info("This panel is a mock-up of how NirmanAI risk scores would drive KAYA's "
+                "outbound agent. It is the only illustrative element in this dashboard.",
+                icon="ℹ️")
+        if not order_book.empty:
+            top = order_book.iloc[0]
+            st.markdown(f"""
+> **Jarvis (proposed automation)**
+> "NirmanAI scored **{top['po_id']} — {top['material']}** from {top['supplier']}
+> at **{top['delay_probability']:.0%}** delay risk
+> ({top['top_risk_factors'][0].lower() if len(top['top_risk_factors']) else 'multiple factors'}).
+> I would contact two alternate suppliers on this corridor and hold a
+> {max(3, int(top['conditional_delay_days']))}-day buffer."
 
-# ═══════════════════════════════════════════
-# TAB 3: PREDICT NEW ORDER
-# ═══════════════════════════════════════════
-with tab3:
-    st.markdown("### 🔮 Predict Delivery Risk for a New Order")
+The risk score, supplier and reasoning above are real model output for the
+currently selected project. Only the outbound action is hypothetical.
+            """)
 
-    col_f1, col_f2 = st.columns(2)
 
-    with col_f1:
-        material  = st.selectbox("Material Type", [
-            "TMT Steel","OPC Cement","River Sand","Coarse Aggregate",
-            "Fly Ash Bricks","AAC Blocks","Structural Steel",
-            "Electrical Cable","HDPE Pipes","Vitrified Tiles","Plywood","Paint"
-        ])
-        sup_tier  = st.selectbox("Supplier Tier", [
+# ══════════════════════════════════════════════════════════════
+# 2 · CHECK AN ORDER
+# ══════════════════════════════════════════════════════════════
+
+with tab_order:
+    st.markdown(ui.section(
+        "Step 2", "Check a specific order",
+        "Score any order before you place it. You get a probability, a calibrated "
+        "day range, the drivers behind it, and the wastage buffer to add."),
+        unsafe_allow_html=True)
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        material = st.selectbox("Material", MATERIALS, index=MATERIALS.index("River Sand"))
+        sup_tier = st.selectbox("Supplier tier", [
             "Tier 1 (Large Manufacturer)",
             "Tier 2 (Regional Distributor)",
-            "Tier 3 (Local Supplier)"
-        ])
-        origin    = st.selectbox("Origin State", [
-            "Maharashtra","Gujarat","Rajasthan","Karnataka",
-            "Tamil Nadu","Jharkhand","Odisha","Punjab"
-        ])
-        dest_s    = st.selectbox("Destination State", [
-            "Bihar","Uttar Pradesh","West Bengal","Maharashtra",
-            "Tamil Nadu","Kerala","Madhya Pradesh","Haryana"
-        ])
+            "Tier 3 (Local Supplier)"], index=1)
+    with c2:
+        origin = st.selectbox("Ships from", STATES, index=STATES.index("Rajasthan"))
+        quantity = st.number_input("Quantity", 10, 50000, 300, step=10,
+                                   help=f"Priced at ₹{MATERIAL_PRICES.get(material, 500):,}/unit")
+    with c3:
+        past_del = st.slider("Supplier's past delay rate", 0.02, 0.70, 0.35, 0.01,
+                             help="From your own GRN history, or the supplier database.")
+        order_month = MONTHS.index(
+            st.selectbox("Delivery month", MONTHS, index=current_month - 1,
+                         key="order_month")) + 1
 
-    with col_f2:
-        distance  = st.slider("Distance (km)", 50, 2000, 800)
-        quantity  = st.number_input("Order Quantity", 10, 10000, 150)
-        past_del  = st.slider("Supplier's Past Delay Rate", 0.05, 0.70, 0.35)
-        order_month = st.slider("Order Month", 1, 12, current_month)
+    st.markdown("")
+    go_predict = st.button("Score this order", type="primary", use_container_width=True)
 
-    if st.button("🔮 Predict Delay Risk", type="primary", use_container_width=True):
-        m_int_ord = monsoon_intensity(order_month)
-
-        wastage_result = None
-        if models_ok:
-            from train_delay_model import predict_delay
-            from train_wastage_model import predict_wastage
-            inp = {
-                "month": order_month, "day_of_week": 0, "quarter": (order_month-1)//3+1,
-                "is_festival_period": 0, "material_type": material,
-                "supplier_tier": sup_tier, "origin_state": origin,
-                "destination_state": dest_s, "distance_km": distance,
-                "order_quantity": quantity,
-                "promised_lead_days": 14,
-                "monsoon_intensity": m_int_ord,
-                "monsoon_sensitivity": 0.5,
-                "dest_logistics_score": 0.6,
-                "orig_logistics_score": 0.7,
-                "dest_monsoon_severity": 0.65,
-                "supplier_reliability": 1 - past_del * 0.8,
-                "past_delay_rate": past_del,
-                # New features from Kanchan's notebook:
-                "vehicle_type": "Truck - Heavy",
-                "temperature": 28.0,
-                "humidity": 65.0 if m_int_ord < 0.3 else 85.0,
-                "traffic_status": "Moderate",
-                "waiting_time": 15,
-                "inventory_level": 500,
-                "asset_utilization": 80.0,
-                "demand_forecast": 400,
-                "order_value_inr": quantity * 1500,
-                "road_quality": 0.65,
-                "supplier_capacity": 80,
-                "fuel_price_index": 105.0,
-                "driver_experience": 10,
-            }
-            wast_inp = {
-                "project_type": project_type, "state": state,
-                "project_size_sqft": project_size,
-                "project_duration_months": 12,
-                "month_of_construction": order_month,
-                "contractor_experience_yrs": contractor_exp,
-                "num_workers": max(20, project_size // 200),
-                "workforce_skill_level": workforce_skill,
-                "supervision_quality": supervision,
-                "material_type": material,
-                "blueprint_quantity": quantity,
-                "logistics_score": 0.6,
-                "monsoon_intensity": m_int_ord,
-                "monsoon_sensitivity": 0.5,
-            }
-            try:
-                with st.spinner("NirmanAI is calculating risk..."):
-                    result = predict_delay(
-                        models["clf_delay"], models["reg_delay"], models["conformal"],
-                        models["enc_delay"], models["feat_delay"], inp
-                    )
-                    wastage_result = predict_wastage(
-                        models["reg_wast"], models["reg_wast_lo"], models["reg_wast_hi"],
-                        models["enc_wast"], models["feat_wast"], wast_inp
-                    )
-            except Exception:
-                st.error("⚠️ Model prediction failed — showing demo estimate instead. "
-                         "Re-run `python setup.py` to retrain the models.")
-                models_ok = False
-
-        if not models_ok:
-            # Demo mode mock
-            delay_prob = min(0.95, 0.15 + m_int_ord*0.4 + past_del*0.5 + (distance/5000)*0.2)
-            pred_days  = int(delay_prob * 14) if delay_prob > 0.5 else 0
-            risk_map   = {True: ("High" if delay_prob<0.75 else "Critical"), False: "Low"}
-            result = {
-                "delay_probability": round(delay_prob,3),
-                "is_delayed": delay_prob>=0.5,
-                "predicted_delay_days": pred_days,
-                "ci_lower": max(0, pred_days-3),
-                "ci_upper": pred_days+4,
-                "risk_score": int(delay_prob*100),
-                "risk_label": risk_map[delay_prob>=0.5],
-                "top_risk_factors": [
-                    f"Monsoon intensity: {m_int_ord:.0%}" if m_int_ord>0.4 else "Normal weather conditions",
-                    f"Supplier delay rate: {past_del:.0%}",
-                    f"Route distance: {distance} km"
-                ]
-            }
-
-        # Display result
-        color_map = {"Low":"green","Medium":"orange","High":"red","Critical":"red"}
-        risk_label = result["risk_label"]
-
-        r1, r2, r3 = st.columns(3)
-        r1.metric("Delay Probability", f"{result['delay_probability']:.1%}")
-        r2.metric("Predicted Delay",   f"{result['predicted_delay_days']:.0f} days",
-                  f"Range: {result['ci_lower']:.0f}–{result['ci_upper']:.0f} days")
-        r3.metric("Risk Score",        f"{result['risk_score']}/100")
-
-        box_class = "alert-box" if risk_label in ["Critical","High"] else \
-                    "warning-box" if risk_label=="Medium" else "ok-box"
-        icon = {"Critical":"🔴","High":"🟠","Medium":"🟡","Low":"🟢"}[risk_label]
-
-        factors_html = "".join([f"<li>{rf}</li>" for rf in result["top_risk_factors"]])
-        st.markdown(f"""
-        <div class="{box_class}">
-            {icon} <strong>Risk Level: {risk_label}</strong>
-            <p style="margin:8px 0 4px;font-size:13px;color:#aab4c8;">Key risk factors:</p>
-            <ul style="margin:0;font-size:13px;color:#cdd6e4;">{factors_html}</ul>
-        </div>
-        """, unsafe_allow_html=True)
-
-        # Gauge chart
-        fig_gauge = go.Figure(go.Indicator(
-            mode="gauge+number+delta",
-            value=result["risk_score"],
-            domain={"x":[0,1],"y":[0,1]},
-            title={"text":"Risk Score", "font":{"color":"#e8eaf6","size":16}},
-            number={"suffix":"/100","font":{"color":"#e8eaf6"}},
-            gauge={
-                "axis":{"range":[0,100],"tickcolor":"#8892b0"},
-                "bar":{"color":{"Low":"#44ff88","Medium":"#ffcc00",
-                                "High":"#ff8800","Critical":"#ff4444"}[risk_label]},
-                "steps":[
-                    {"range":[0,30],"color":"rgba(68,255,136,0.15)"},
-                    {"range":[30,55],"color":"rgba(255,204,0,0.15)"},
-                    {"range":[55,75],"color":"rgba(255,136,0,0.15)"},
-                    {"range":[75,100],"color":"rgba(255,68,68,0.15)"},
-                ],
-                "threshold":{"line":{"color":"white","width":3},"value":result["risk_score"]}
-            }
-        ))
-        fig_gauge.update_layout(
-            paper_bgcolor="#1a1d2e", font_color="#e8eaf6", height=280
-        )
-        st.plotly_chart(fig_gauge, use_container_width=True)
-
-        if wastage_result:
-            st.markdown("#### 📦 Wastage Estimate for This Order")
-            w1, w2, w3 = st.columns(3)
-            w1.metric("Predicted Wastage",
-                      f"{wastage_result['predicted_wastage_pct']:.1f}%",
-                      f"Range: {wastage_result['wastage_range_low']:.1f}–{wastage_result['wastage_range_high']:.1f}%")
-            w2.metric("Order With Buffer",
-                      f"{wastage_result['actual_qty_estimate']:,.0f} units",
-                      f"Blueprint: {wastage_result['blueprint_quantity']:,} units")
-            w3.metric("Est. Cost Overrun",
-                      f"₹{wastage_result['estimated_cost_overrun_inr']:,.0f}",
-                      f"Category: {wastage_result['wastage_category']}")
-
-            wast_box = {"High":"alert-box","Medium":"warning-box","Low":"ok-box"}[wastage_result["wastage_category"]]
-            wast_factors = "".join(f"<li>{f}</li>" for f in wastage_result["risk_factors"])
-            st.markdown(f"""
-            <div class="{wast_box}">
-                <strong>Wastage drivers:</strong>
-                <ul style="margin:4px 0 0;font-size:13px;color:#cdd6e4;">{wast_factors}</ul>
-            </div>
-            """, unsafe_allow_html=True)
-
-# ═══════════════════════════════════════════
-# TAB 4: ANALYTICS
-# ═══════════════════════════════════════════
-with tab4:
-    st.markdown("### 📊 India Construction Supply Chain — Analytics")
-
-    col_a1, col_a2 = st.columns(2)
-
-    with col_a1:
-        # State logistics heatmap
-        states_data = {
-            "State":["Gujarat","Maharashtra","Haryana","Tamil Nadu","Karnataka",
-                     "Telangana","Punjab","West Bengal","Rajasthan","Madhya Pradesh",
-                     "Uttar Pradesh","Kerala","Odisha","Bihar","Jharkhand"],
-            "Logistics Score":[0.82,0.78,0.74,0.75,0.72,0.70,0.74,0.62,
-                               0.65,0.55,0.58,0.68,0.50,0.45,0.42]
-        }
-        df_states = pd.DataFrame(states_data).sort_values("Logistics Score")
-        fig_states = px.bar(df_states, x="Logistics Score", y="State",
-                            orientation="h",
-                            color="Logistics Score",
-                            color_continuous_scale="RdYlGn",
-                            title="State Logistics Quality Index")
-        fig_states.update_layout(
-            paper_bgcolor="#1a1d2e", plot_bgcolor="#1a1d2e",
-            font_color="#e8eaf6", title_font_size=14,
-            coloraxis_showscale=False, height=420
-        )
-        st.plotly_chart(fig_states, use_container_width=True)
-
-    with col_a2:
-        # Monthly delay probability trend
-        months_label = ["Jan","Feb","Mar","Apr","May","Jun",
-                        "Jul","Aug","Sep","Oct","Nov","Dec"]
-        delay_probs = [0.18,0.15,0.17,0.22,0.28,0.52,
-                       0.68,0.63,0.48,0.35,0.20,0.16]
-        fig_trend = go.Figure()
-        fig_trend.add_trace(go.Scatter(
-            x=months_label, y=[p*100 for p in delay_probs],
-            mode="lines+markers",
-            line=dict(color="#4fc3f7", width=3),
-            marker=dict(size=8,
-                        color=["#ff4444" if p>0.5 else "#ffcc00" if p>0.3
-                               else "#44ff88" for p in delay_probs]),
-            fill="tozeroy", fillcolor="rgba(79,195,247,0.1)",
-            name="Avg Delay Probability"
-        ))
-        fig_trend.add_hline(y=50, line_dash="dash", line_color="#ff4444",
-                            annotation_text="High risk threshold")
-        fig_trend.add_vline(x=current_month-1, line_dash="dot",
-                            line_color="rgba(255,255,255,0.55)", annotation_text="Now")
-        fig_trend.update_layout(
-            title="Average Delay Probability by Month",
-            yaxis_title="Delay Probability (%)",
-            paper_bgcolor="#1a1d2e", plot_bgcolor="#1a1d2e",
-            font_color="#e8eaf6", title_font_size=14, height=420,
-            showlegend=False
-        )
-        st.plotly_chart(fig_trend, use_container_width=True)
-
-    # India market stats
-    st.markdown("---")
-    st.markdown("#### 🇮🇳 India Construction Market Intelligence")
-    m1,m2,m3,m4 = st.columns(4)
-    m1.metric("Market Size (2025)", "$640B", "2nd largest globally")
-    m2.metric("Projected (2030)",   "$1.4T", "+119% growth")
-    m3.metric("Annual Wastage Loss","₹1.5L Cr", "20-30% of materials")
-    m4.metric("Projects Delayed",   "77%",  "Avg 20-month overrun")
-
-    st.info("""
-    **NirmanAI ROI Estimate**: On a typical ₹50 crore residential project, 
-    NirmanAI reduces wastage by 8-12% and prevents 2-3 critical delivery delays.
-    **Estimated savings: ₹18–28 lakhs per project.**  
-    At ₹50K/month SaaS pricing, ROI is achieved within the first month.
-    """)
-
-# ═══════════════════════════════════════════
-# TAB 5: SMART PROCUREMENT PLANNER
-# ═══════════════════════════════════════════
-with tab5:
-    st.markdown("### 📋 Smart Procurement Planner")
-    st.caption("AI-generated week-by-week order schedule to minimize delays and wastage")
-
-    st.markdown("#### Enter Bill of Quantities")
-    materials_selected = st.multiselect(
-        "Select materials for this project",
-        ["TMT Steel","OPC Cement","River Sand","Coarse Aggregate",
-         "Fly Ash Bricks","Structural Steel","Electrical Cable","HDPE Pipes"],
-        default=["TMT Steel","OPC Cement","River Sand"]
-    )
-
-    if materials_selected:
-        bom_data = []
-        qty_cols = st.columns(min(len(materials_selected), 4))
-        for i, mat in enumerate(materials_selected):
-            with qty_cols[i % len(qty_cols)]:
-                qty = st.number_input(f"{mat}", 10, 10000, 100, key=f"bom_{mat}",
-                                      help="Blueprint quantity")
-            bom_data.append({"material_type": mat, "blueprint_quantity": qty})
-
-        if st.button("📋 Generate Procurement Plan", type="primary", use_container_width=True):
-            schedule_data = []
-            total_buffer_cost = 0
-
-            with st.spinner("NirmanAI is building your procurement schedule..."):
-                if models_ok:
-                    from train_delay_model import predict_delay
-                    from train_wastage_model import predict_wastage
-                    m_int_plan = monsoon_intensity(current_month)
-
-                    for item in bom_data:
-                        mat, qty = item["material_type"], item["blueprint_quantity"]
-                        delay_res = predict_delay(
-                            models["clf_delay"], models["reg_delay"], models["conformal"],
-                            models["enc_delay"], models["feat_delay"],
-                            {
-                                "month": current_month, "day_of_week": 0,
-                                "quarter": (current_month-1)//3+1, "is_festival_period": 0,
-                                "material_type": mat,
-                                "supplier_tier": "Tier 2 (Regional Distributor)",
-                                "origin_state": "Maharashtra", "destination_state": state,
-                                "distance_km": 800, "order_quantity": qty,
-                                "promised_lead_days": 14,
-                                "monsoon_intensity": m_int_plan, "monsoon_sensitivity": 0.5,
-                                "dest_logistics_score": 0.6, "orig_logistics_score": 0.7,
-                                "dest_monsoon_severity": 0.6,
-                                "supplier_reliability": 0.7, "past_delay_rate": 0.35,
-                                "vehicle_type": "Truck - Medium",
-                                "temperature": 32.0,
-                                "humidity": 70.0,
-                                "traffic_status": "Clear",
-                                "waiting_time": 10,
-                                "inventory_level": 600,
-                                "asset_utilization": 85.0,
-                                "demand_forecast": 500,
-                                "order_value_inr": qty * 1500,
-                                "road_quality": 0.7,
-                                "supplier_capacity": 90,
-                                "fuel_price_index": 100.0,
-                                "driver_experience": 12,
-                            }
-                        )
-                        wast_res = predict_wastage(
-                            models["reg_wast"], models["reg_wast_lo"], models["reg_wast_hi"],
-                            models["enc_wast"], models["feat_wast"],
-                            {
-                                "project_type": project_type, "state": state,
-                                "project_size_sqft": project_size,
-                                "project_duration_months": 12,
-                                "month_of_construction": current_month,
-                                "contractor_experience_yrs": contractor_exp,
-                                "num_workers": max(20, project_size // 200),
-                                "workforce_skill_level": workforce_skill,
-                                "supervision_quality": supervision,
-                                "material_type": mat, "blueprint_quantity": qty,
-                                "logistics_score": 0.6,
-                                "monsoon_intensity": m_int_plan, "monsoon_sensitivity": 0.5,
-                            }
-                        )
-                        risk_level = delay_res["risk_label"]
-                        order_week = {"Critical":"Week 1","High":"Week 1",
-                                      "Medium":"Week 2","Low":"Week 3"}[risk_level]
-                        reason = delay_res["top_risk_factors"][0]
-                        buffer_qty = wast_res["actual_qty_estimate"]
-                        total_buffer_cost += wast_res["estimated_cost_overrun_inr"]
-                        schedule_data.append({
-                            "Material": mat,
-                            "Order By": order_week,
-                            "Risk Level": risk_level,
-                            "Delay Prob": f"{delay_res['delay_probability']:.0%}",
-                            "Blueprint Qty": qty,
-                            "Order Qty (with wastage buffer)": f"{buffer_qty:,.0f}",
-                            "Wastage Est.": f"{wast_res['predicted_wastage_pct']:.1f}%",
-                            "Reason": reason,
-                        })
-                else:
-                    for i, item in enumerate(bom_data):
-                        risk_level = ["Low","Medium","High","Critical"][i % 4]
-                        order_week = ["Week 3","Week 2","Week 1","Week 1"][i % 4]
-                        schedule_data.append({
-                            "Material": item["material_type"],
-                            "Order By": order_week,
-                            "Risk Level": risk_level,
-                            "Reason": ("Monsoon risk — order early"
-                                       if risk_level in ["High","Critical"]
-                                       else "Standard lead time"),
-                        })
-
-            st.markdown("#### Recommended Procurement Schedule")
-            df_plan = pd.DataFrame(schedule_data).sort_values("Order By")
-
-            def color_plan_risk(val):
-                return {"Critical":"background-color:#ff444430",
-                        "High":"background-color:#ff880025",
-                        "Medium":"background-color:#ffcc0020",
-                        "Low":"background-color:#44ff8815"}.get(val, "")
-
-            st.dataframe(
-                df_plan.style.map(color_plan_risk, subset=["Risk Level"]),
-                use_container_width=True, hide_index=True
-            )
-
-            if models_ok and total_buffer_cost:
-                st.warning(f"💸 Total projected wastage overrun across BoQ: **₹{total_buffer_cost:,.0f}** — "
-                           "already included in the recommended order quantities above.")
-            st.success("💡 Ordering high-risk materials 2 weeks early prevents ₹8-15 lakh in idle labor costs")
+    if not go_predict:
+        st.markdown(ui.empty_state(
+            "🎯", "Ready when you are",
+            "Set the order above and hit <b>Score this order</b>. Try River Sand from "
+            "Rajasthan to Bihar in July, then switch the month to February — the same "
+            "order goes from critical to routine."), unsafe_allow_html=True)
     else:
-        st.info("Select at least one material above to generate a procurement plan.")
+        with safe_panel("Order scoring"):
+            from suppliers_db import state_distance_km
 
-# ═══════════════════════════════════════════
-# TAB 6: SIMULATION ENGINE
-# ═══════════════════════════════════════════
-with tab6:
-    st.markdown("### 📈 Monte Carlo Simulation Engine")
-    st.caption("Simulate thousands of supply chain cascade failure modes.")
-    if st.button("▶️ Run 10,000 Simulations", key="run_sim"):
-        from simulation_engine import run_simulation
-        with st.spinner("Running Monte Carlo simulation (N=10,000)..."):
-            sim_res = run_simulation(project_type, state, current_month, 10000)
-            tl = sim_res["project_timeline"]
-            summary = sim_res["executive_summary"]
-            
-            r1, r2, r3 = st.columns(3)
-            r1.metric("On-Time Probability", f"{tl['on_time_probability_pct']}%")
-            r2.metric("Most Likely Duration", f"{tl['most_likely_days']} days", f"Planned: {tl['baseline_duration_days']} days")
-            r3.metric("Critical Risk", summary["risk_level"])
-            
-            st.error(f"**Headline:** {summary['headline']}")
-            
-            # Duration Distribution Histogram
-            st.markdown("#### Duration Distribution (10,000 runs)")
-            dist = sim_res["duration_distribution"]
-            bin_centers = [(dist["bin_edges"][i] + dist["bin_edges"][i+1]) / 2 for i in range(len(dist["counts"]))]
-            fig_dist = go.Figure(go.Bar(
-                x=bin_centers, y=dist["counts"],
-                marker_color="#4fc3f7",
-                name="Frequency"
-            ))
-            fig_dist.add_vline(x=tl['baseline_duration_days'], line_dash="dash", line_color="#44ff88", annotation_text="Baseline Plan")
-            fig_dist.add_vline(x=tl['most_likely_days'], line_dash="dash", line_color="#ff8800", annotation_text="Most Likely")
-            fig_dist.update_layout(
-                title="Project Completion Duration Spread",
-                xaxis_title="Total Project Duration (days)", yaxis_title="Frequency",
-                paper_bgcolor='#1a1d2e', plot_bgcolor='#1a1d2e', font_color='#e8eaf6'
-            )
-            st.plotly_chart(fig_dist, use_container_width=True)
-            
+            distance = state_distance_km(origin, state)
+            reliability = 1 - past_del
+            fake_supplier = {"state": origin, "tier": sup_tier,
+                             "reliability_score": reliability,
+                             "avg_lead_days": 14, "name": "Selected supplier"}
+
+            from demo_data import _heuristic_delay, build_delay_input
+            payload = build_delay_input(material, fake_supplier, state, order_month,
+                                        quantity, distance_km=distance,
+                                        rng=np.random.default_rng(7))
+
+            with st.spinner("Scoring against 38 features…"):
+                if MODELS_READY:
+                    from train_delay_model import predict_delay
+                    result = predict_delay(
+                        MODELS["clf_delay"], MODELS["reg_delay"], MODELS["conformal"],
+                        MODELS["enc_delay"], MODELS["feat_delay"], payload,
+                        explainer=MODELS.get("explainer"))
+                else:
+                    result = _heuristic_delay(payload)
+
+                wastage = cached_wastage({material: quantity},
+                                         dict(PROJECT_CTX, month=order_month),
+                                         MODELS_READY)
+
+            label = result["risk_label"]
+            color = ui.RISK_COLORS[label]
+
+            left, right = st.columns([3, 2])
+            with left:
+                m1, m2, m3 = st.columns(3)
+                m1.markdown(ui.kpi("Delay probability",
+                                   f"{result['delay_probability']:.0%}",
+                                   "chance it misses the promised date", color),
+                            unsafe_allow_html=True)
+                m2.markdown(ui.kpi("If it is late",
+                                   f"{result['conditional_delay_days']:.0f} d",
+                                   "90% of similar orders: " + ui.format_interval(
+                                       result["conditional_ci_lower"],
+                                       result["conditional_ci_upper"])),
+                            unsafe_allow_html=True)
+                m3.markdown(ui.kpi("Risk band", label,
+                                   f"score {result['risk_score']}/100", color),
+                            unsafe_allow_html=True)
+                st.markdown("")
+
+                factors = "".join(f"<li style='margin-bottom:4px;'>{f}</li>"
+                                  for f in result["top_risk_factors"])
+                source = ("SHAP — the model's own top contributors for this order"
+                          if result.get("explanation_source") == "shap"
+                          else "rule-based fallback")
+                st.markdown(
+                    f'<div class="panel" style="border-left:3px solid {color};">'
+                    f'<p class="panel-title" style="color:{color};">'
+                    f'{ui.RISK_ICON[label]} {label} risk — '
+                    f'{result["delay_probability"]:.0%} chance this order slips</p>'
+                    f'<p class="panel-note" style="margin:9px 0 5px;">'
+                    f'Why the model says so:</p>'
+                    f'<ul style="margin:0;font-size:12.5px;color:var(--text);'
+                    f'padding-left:18px;">{factors}</ul>'
+                    f'<p class="panel-note" style="margin-top:10px;font-size:11px;'
+                    f'color:var(--dim);">Source: {source} · route {distance:,} km · '
+                    f'{MONTHS[order_month - 1]}</p></div>',
+                    unsafe_allow_html=True)
+
+            with right:
+                fig = go.Figure(go.Indicator(
+                    mode="gauge+number",
+                    value=result["risk_score"],
+                    # Inset the domain so the 0 and 100 axis labels are not
+                    # clipped by the plot edge.
+                    domain={"x": [0.08, 0.92], "y": [0, 0.92]},
+                    number={"suffix": "<span style='font-size:15px;'>/100</span>",
+                            "font": {"color": color, "size": 38}},
+                    gauge={
+                        "axis": {"range": [0, 100], "tickcolor": "#64738c",
+                                 "tickfont": {"size": 10}},
+                        "bar": {"color": color, "thickness": 0.72},
+                        "bgcolor": "rgba(255,255,255,0.03)",
+                        "borderwidth": 0,
+                        "steps": [
+                            {"range": [0, 30], "color": "rgba(61,220,132,0.14)"},
+                            {"range": [30, 55], "color": "rgba(242,194,0,0.14)"},
+                            {"range": [55, 75], "color": "rgba(255,140,26,0.14)"},
+                            {"range": [75, 100], "color": "rgba(255,77,79,0.16)"},
+                        ],
+                    }))
+                ui.apply_plot_theme(fig, height=260, title="Delay risk score")
+                fig.update_layout(margin=dict(l=24, r=24, t=48, b=8))
+                st.plotly_chart(fig, use_container_width=True)
+
+            if not wastage.empty:
+                w = wastage.iloc[0]
+                st.markdown("#### How much should you actually order?")
+                st.markdown(ui.why(
+                    "The blueprint quantity is never the order quantity. The wastage model "
+                    "sizes the buffer from <b>this site's</b> workforce skill, supervision "
+                    "quality and monsoon exposure — the three levers a site manager "
+                    "actually controls."), unsafe_allow_html=True)
+                waste_color = {"High": ui.RISK_COLORS["Critical"],
+                               "Medium": ui.RISK_COLORS["Medium"],
+                               "Low": ui.RISK_COLORS["Low"]}[w["category"]]
+                w1, w2, w3 = st.columns(3)
+                w1.markdown(ui.kpi("Predicted wastage", f"{w['wastage_pct']:.1f}%",
+                                   f"10th–90th percentile: "
+                                   f"{w['wastage_low']:.1f}–{w['wastage_high']:.1f}%",
+                                   waste_color), unsafe_allow_html=True)
+                w2.markdown(ui.kpi("Order this much", f"{w['order_qty']:,.0f}",
+                                   f"blueprint says {w['blueprint_qty']:,}"),
+                            unsafe_allow_html=True)
+                w3.markdown(ui.kpi("Cost of the waste", fmt_inr(w["cost_overrun"]),
+                                   f"{w['category']} wastage band", waste_color),
+                            unsafe_allow_html=True)
+                st.markdown("")
+                st.caption("Drivers: " + " · ".join(w["drivers"]))
+
+
+# ══════════════════════════════════════════════════════════════
+# 3 · WASTAGE & COST
+# ══════════════════════════════════════════════════════════════
+
+with tab_waste:
+    st.markdown(ui.section(
+        "Step 3", "Wastage &amp; cost overrun",
+        f"Per-material wastage for <b>{project_name}</b>, scored from this site's actual "
+        f"conditions: {workforce_skill.lower()} workforce, {supervision.lower()} "
+        f"supervision, {contractor_exp} years of contractor experience."),
+        unsafe_allow_html=True)
+
+    default_boq = {"OPC Cement": 800, "River Sand": 450, "TMT Steel": 60,
+                   "Fly Ash Bricks": 28000, "Vitrified Tiles": 1400, "Plywood": 700}
+    chosen = st.multiselect("Materials in the Bill of Quantities", MATERIALS,
+                            default=list(default_boq.keys()))
+
+    if not chosen:
+        st.markdown(ui.empty_state(
+            "📦", "No materials selected",
+            "Pick at least one material above to forecast its wastage and cost overrun."),
+            unsafe_allow_html=True)
+    else:
+        boq = {}
+        qty_cols = st.columns(min(len(chosen), 6))
+        for i, mat in enumerate(chosen):
+            with qty_cols[i % len(qty_cols)]:
+                boq[mat] = st.number_input(mat, 1, 200000,
+                                           default_boq.get(mat, 500),
+                                           key=f"boq_{mat}",
+                                           help=f"₹{MATERIAL_PRICES.get(mat, 500):,}/unit")
+        # Remembered so the exported report covers the BoQ the user set up here.
+        st.session_state["last_boq"] = dict(boq)
+
+        with safe_panel("The wastage forecast"):
+            with st.spinner("Scoring each material…"):
+                wf = cached_wastage(boq, PROJECT_CTX, MODELS_READY)
+
+            total_overrun = float(wf["cost_overrun"].sum())
+            weighted = float(
+                (wf["wastage_pct"] * wf["blueprint_qty"]).sum() / wf["blueprint_qty"].sum())
+
+            k1, k2, k3 = st.columns(3)
+            k1.markdown(ui.kpi("Projected overrun", fmt_inr(total_overrun),
+                               "Value of material you will throw away",
+                               ui.RISK_COLORS["Critical"]), unsafe_allow_html=True)
+            # Colour against the industry benchmark, not an arbitrary cutoff —
+            # showing 18.7% in warning amber next to "benchmark: 20-30%" tells
+            # the reader two contradictory things at once.
+            if weighted >= 20:
+                weighted_color, weighted_note = (
+                    ui.RISK_COLORS["Critical"], "inside the 20–30% industry norm — bad news")
+            elif weighted >= 12:
+                weighted_color, weighted_note = (
+                    ui.RISK_COLORS["Medium"], "below the 20–30% industry norm")
+            else:
+                weighted_color, weighted_note = (
+                    ui.RISK_COLORS["Low"], "well below the 20–30% industry norm")
+            k2.markdown(ui.kpi("Weighted wastage", f"{weighted:.1f}%",
+                               weighted_note, weighted_color), unsafe_allow_html=True)
+            k3.markdown(ui.kpi("Materials in High band", f"{(wf['category'] == 'High').sum()}",
+                               f"of {len(wf)} in the BoQ", ui.RISK_COLORS["Medium"]),
+                        unsafe_allow_html=True)
+
+            st.markdown("")
+            left, right = st.columns([5, 4])
+            with left:
+                table = wf.copy()
+                table["Wastage"] = table["wastage_pct"].map(lambda v: f"{v:.1f}%")
+                table["10–90% range"] = table.apply(
+                    lambda r: f"{r['wastage_low']:.0f}–{r['wastage_high']:.0f}%", axis=1)
+                table["Order qty"] = table["order_qty"].map(lambda v: f"{v:,.0f}")
+                table["Blueprint"] = table["blueprint_qty"].map(lambda v: f"{v:,.0f}")
+                table["Cost of waste"] = table["cost_overrun"].map(fmt_inr_full)
+                st.dataframe(
+                    table[["material", "Blueprint", "Order qty", "Wastage",
+                           "10–90% range", "category", "Cost of waste"]].rename(columns={
+                               "material": "Material", "category": "Band"}),
+                    use_container_width=True, hide_index=True, height=250)
+                st.caption("Every wastage figure carries its 10th–90th percentile range from "
+                           "the quantile models — a point estimate alone would be misleading.")
+
+                # Percentages and rupees rank materials differently, and rupees
+                # are what the site actually loses. Surfacing the gap turns a
+                # table into an insight: the worst % is rarely the worst cost.
+                by_cost = wf.sort_values("cost_overrun", ascending=False).iloc[0]
+                by_pct = wf.sort_values("wastage_pct", ascending=False).iloc[0]
+                if by_cost["material"] != by_pct["material"]:
+                    st.info(
+                        f"**Chase {by_cost['material']}, not {by_pct['material']}.** "
+                        f"{by_pct['material']} has the worst wastage rate "
+                        f"({by_pct['wastage_pct']:.1f}%), but {by_cost['material']} loses more "
+                        f"money — {fmt_inr_full(by_cost['cost_overrun'])} at only "
+                        f"{by_cost['wastage_pct']:.1f}% wastage, because it is the expensive "
+                        f"one. Percentages rank materials differently than rupees do.",
+                        icon="💡")
+
+            with right:
+                fig = go.Figure(go.Bar(
+                    x=wf["material"], y=wf["wastage_pct"],
+                    marker=dict(color=[ui.RISK_COLORS["Critical"] if c == "High"
+                                       else ui.RISK_COLORS["Medium"] if c == "Medium"
+                                       else ui.RISK_COLORS["Low"] for c in wf["category"]],
+                                line=dict(width=0)),
+                    error_y=dict(type="data", symmetric=False,
+                                 array=(wf["wastage_high"] - wf["wastage_pct"]).clip(lower=0),
+                                 arrayminus=(wf["wastage_pct"] - wf["wastage_low"]).clip(lower=0),
+                                 color="rgba(255,255,255,0.4)", thickness=1.2, width=4),
+                    text=[f"{v:.1f}%" for v in wf["wastage_pct"]],
+                    textposition="outside", textfont=dict(size=11),
+                    hovertemplate="%{x}: %{y:.1f}%<extra></extra>",
+                ))
+                # Anchor the threshold labels outside the plotting area — the
+                # default right-hand placement lands them on top of the last bar.
+                # Short labels only — anything longer gets clipped at the axis.
+                # The colours carry the low/high meaning; the caption spells it out.
+                fig.add_hline(y=5, line_dash="dot", line_color=ui.RISK_COLORS["Low"],
+                              annotation_text="5%", annotation_position="top left",
+                              annotation_font_size=10,
+                              annotation_font_color=ui.RISK_COLORS["Low"])
+                fig.add_hline(y=15, line_dash="dot", line_color=ui.RISK_COLORS["Critical"],
+                              annotation_text="15%", annotation_position="top left",
+                              annotation_font_size=10,
+                              annotation_font_color=ui.RISK_COLORS["Critical"])
+                ui.apply_plot_theme(
+                    fig, height=360,
+                    title="Wastage by material, with uncertainty<br>"
+                          "<sub style='font-size:10px;color:#8d9bb5;'>"
+                          "dotted lines: 5% low band, 15% high band</sub>")
+                headroom = float((wf["wastage_high"].max() if not wf.empty else 20) * 1.18)
+                fig.update_layout(xaxis_tickangle=-25,
+                                  # Left margin has to clear the threshold labels,
+                                  # which anchor outside the plotting area.
+                                  margin=dict(l=64, r=10, t=48, b=70),
+                                  yaxis=dict(title="Wastage (%)", range=[0, headroom],
+                                             gridcolor="rgba(255,255,255,0.06)"))
+                st.plotly_chart(fig, use_container_width=True)
+
+            # ── Scenario ladder: re-run the model, do not hardcode ──
+            st.markdown("#### What would better supervision be worth?")
+            st.markdown(ui.why(
+                "Each row below is a <b>fresh model run</b> on the same Bill of Quantities "
+                "with only the supervision level changed. This is the business case for "
+                "hiring one more site engineer, priced by the model."), unsafe_allow_html=True)
+
+            with st.spinner("Re-scoring under each supervision level…"):
+                ladder = []
+                for level in ["Poor", "Average", "Good", "Excellent"]:
+                    scen = cached_wastage(boq, dict(PROJECT_CTX, supervision=level),
+                                          MODELS_READY)
+                    if scen.empty:
+                        continue
+                    ladder.append({
+                        "Supervision": level + (" (current)" if level == supervision else ""),
+                        "_level": level,
+                        "Weighted wastage %": round(float(
+                            (scen["wastage_pct"] * scen["blueprint_qty"]).sum()
+                            / scen["blueprint_qty"].sum()), 1),
+                        "Cost of waste": float(scen["cost_overrun"].sum()),
+                    })
+
+            if ladder:
+                ld = pd.DataFrame(ladder)
+                current_cost = float(
+                    ld.loc[ld["_level"] == supervision, "Cost of waste"].iloc[0])
+                best_cost = float(ld["Cost of waste"].min())
+                saving = current_cost - best_cost
+
+                lc1, lc2 = st.columns([3, 4])
+                with lc1:
+                    show = ld[["Supervision", "Weighted wastage %", "Cost of waste"]].copy()
+                    show["Cost of waste"] = show["Cost of waste"].map(fmt_inr_full)
+                    st.dataframe(show, use_container_width=True, hide_index=True)
+                    if saving > 0:
+                        st.success(
+                            f"Moving from **{supervision}** to **Excellent** supervision "
+                            f"saves **{fmt_inr(saving)}** of wasted material on this BoQ "
+                            f"alone.", icon="💡")
+                    else:
+                        st.info("This site is already at the best modelled supervision "
+                                "level for wastage.", icon="✅")
+                with lc2:
+                    fig = go.Figure(go.Bar(
+                        x=ld["_level"], y=ld["Cost of waste"],
+                        marker=dict(color=[ui.RISK_COLORS["Critical"] if lv == supervision
+                                           else "#2f3d55" for lv in ld["_level"]],
+                                    line=dict(width=0)),
+                        text=[fmt_inr(v) for v in ld["Cost of waste"]],
+                        textposition="outside", textfont=dict(size=11),
+                        hovertemplate="%{x}: %{text}<extra></extra>"))
+                    ui.apply_plot_theme(fig, height=300,
+                                        title="Cost of wasted material by supervision level")
+                    fig.update_layout(yaxis=dict(title="₹",
+                                                 gridcolor="rgba(255,255,255,0.06)"))
+                    st.plotly_chart(fig, use_container_width=True)
+
+
+# ══════════════════════════════════════════════════════════════
+# 4 · PROJECT SIMULATOR
+# ══════════════════════════════════════════════════════════════
+
+with tab_sim:
+    st.markdown(ui.section(
+        "Step 4", "Project simulator — the whole schedule, 10,000 times",
+        "Single-order risk is not the real question. The real question is what one late "
+        "delivery does to <b>everything downstream</b>. This runs the full activity "
+        "network as a Monte Carlo."), unsafe_allow_html=True)
+
+    st.markdown(ui.why(
+        "<b>Why this is not just 10,000 random numbers:</b> we score the delay model once "
+        "per material per calendar month (about 130 calls) to build a calibrated risk "
+        "profile, then draw 10,000 scenarios from those profiles through the real activity "
+        "dependency graph. Scoring inside the loop would be ~300,000 model calls and take "
+        "minutes; this way the ML sets every probability and magnitude, and the whole thing "
+        "finishes in under a second."), unsafe_allow_html=True)
+
+    n_sims = st.select_slider("Scenarios to simulate", [1000, 5000, 10000, 20000],
+                              value=10000)
+    run_sim = st.button("Run simulation", type="primary", use_container_width=True,
+                        key="run_sim")
+
+    if not run_sim:
+        st.markdown(ui.empty_state(
+            "🎲", f"Simulate {project_type} in {state}, starting {month_name}",
+            "You will get an on-time probability, the full duration distribution, which "
+            "activities are the real bottlenecks, and which material delays cascade "
+            "furthest downstream."), unsafe_allow_html=True)
+    else:
+        with safe_panel("The project simulator"):
+            with st.spinner(f"Running {n_sims:,} project scenarios…"):
+                sim = cached_simulation(project_type, state, current_month,
+                                        n_sims, MODELS_READY)
+
+            tl = sim["project_timeline"]
+            summary = sim["executive_summary"]
+            cfg = sim["simulation_config"]
+            on_time = tl["on_time_probability_pct"]
+            risk_color = (ui.RISK_COLORS["Low"] if on_time >= 70 else
+                          ui.RISK_COLORS["Medium"] if on_time >= 50 else
+                          ui.RISK_COLORS["High"] if on_time >= 30 else
+                          ui.RISK_COLORS["Critical"])
+
+            tiles = [
+                ("On-time probability", f"{on_time:.0f}%",
+                 f"within 10% of the {tl['baseline_duration_days']}-day plan", risk_color),
+                ("Most likely duration", f"{tl['most_likely_days']:.0f} d",
+                 f"{tl['delay_over_baseline_days']:+.0f} d vs plan", "#eef2f9"),
+                ("Worst case (P90)", f"{tl['worst_case_days']:.0f} d",
+                 "1 run in 10 is at least this bad", ui.RISK_COLORS["High"]),
+                ("Overall risk", summary["risk_level"],
+                 f"{cfg['n_simulations']:,} scenarios in {cfg['elapsed_seconds']}s",
+                 risk_color),
+            ]
+            for col, (label, value, sub, color) in zip(st.columns(4), tiles):
+                col.markdown(ui.kpi(label, value, sub, color), unsafe_allow_html=True)
+
+            st.markdown(
+                f'<div class="panel" style="border-left:3px solid {risk_color};'
+                f'margin-top:12px;"><p class="panel-title">Executive summary</p>'
+                f'<p class="panel-note" style="font-size:13.5px;color:var(--text);'
+                f'margin-top:6px;">{summary["headline"]}</p></div>',
+                unsafe_allow_html=True)
+
+            source_note = ("delay probabilities from the trained XGBoost model"
+                           if cfg.get("risk_source") == "ml"
+                           else "a transparent physics-based fallback (models not trained)")
+            st.caption(
+                f"{cfg['n_simulations']:,} scenarios · {cfg['n_model_calls']} model calls · "
+                f"{source_note} · {cfg['schedule_absorption']:.0%} of each material delay "
+                f"assumed absorbed by schedule float.")
+
+            # Duration distribution
+            dist = sim["duration_distribution"]
+            centers = [(dist["bin_edges"][i] + dist["bin_edges"][i + 1]) / 2
+                       for i in range(len(dist["counts"]))]
+            fig = go.Figure(go.Bar(
+                x=centers, y=dist["counts"],
+                marker=dict(color="rgba(76,194,255,0.55)", line=dict(width=0)),
+                hovertemplate="%{x:.0f} days: %{y} runs<extra></extra>"))
+            fig.add_vline(x=tl["baseline_duration_days"], line_dash="dash",
+                          line_color=ui.RISK_COLORS["Low"],
+                          annotation_text="Contract plan", annotation_font_size=11)
+            fig.add_vline(x=tl["most_likely_days"], line_dash="dash",
+                          line_color=ui.RISK_COLORS["High"],
+                          annotation_text="Most likely", annotation_font_size=11)
+            fig.add_vline(x=tl["worst_case_days"], line_dash="dot",
+                          line_color=ui.RISK_COLORS["Critical"],
+                          annotation_text="P90", annotation_font_size=11)
+            ui.apply_plot_theme(fig, height=340,
+                                title="Where this project actually finishes")
+            fig.update_layout(
+                xaxis=dict(title="Total project duration (days)",
+                           gridcolor="rgba(255,255,255,0.06)"),
+                yaxis=dict(title="Scenarios", gridcolor="rgba(255,255,255,0.06)"),
+                bargap=0.04)
+            st.plotly_chart(fig, use_container_width=True)
+
             c1, c2 = st.columns(2)
             with c1:
-                # Activity Risk Ranking
-                st.markdown("#### Activity Risk Ranking")
-                df_act = pd.DataFrame(sim_res["activity_risk_ranking"][:8])
-                if not df_act.empty:
+                st.markdown("##### Which activities actually slip")
+                acts = pd.DataFrame(sim["activity_risk_ranking"][:8])
+                if not acts.empty:
                     st.dataframe(
-                        df_act[["activity", "pct_simulations_delayed", "avg_delay_when_delayed", "max_delay_observed"]].rename(
-                            columns={"activity": "Activity", "pct_simulations_delayed": "Delayed (%)",
-                                     "avg_delay_when_delayed": "Avg Delay (days)", "max_delay_observed": "Max Delay (days)"}
-                        ).style.background_gradient(cmap='Reds', subset=['Delayed (%)']),
-                        use_container_width=True, hide_index=True
-                    )
-                
-                # Cascade Risk
-                if sim_res.get("cascade_risk"):
-                    st.markdown("#### Cascade Risk Effects")
-                    for cr in sim_res["cascade_risk"][:3]:
-                        st.warning(f"**{cr['material']}** -> {cr['cascade_events']} cascade events, "
-                                   f"avg {cr['avg_cascade_delay']} days delay, "
-                                   f"affects {len(cr['activities_affected'])} downstream activities")
-                
-            with c2:
-                # Material Risk Breakdown
-                st.markdown("#### Material Risk Profile")
-                df_mat = pd.DataFrame(sim_res["material_risk_ranking"])
-                if not df_mat.empty:
-                    fig_mat = px.bar(df_mat, x="delay_frequency", y="material", orientation='h',
-                                    color="delay_frequency", color_continuous_scale="Reds",
-                                    title="Material Delay Frequency (%)")
-                    fig_mat.update_layout(paper_bgcolor='#1a1d2e', plot_bgcolor='#1a1d2e',
-                                          font_color='#e8eaf6', showlegend=False,
-                                          coloraxis_showscale=False)
-                    st.plotly_chart(fig_mat, use_container_width=True)
-                
-                # Critical Path Frequency
-                if sim_res.get("critical_path_frequency"):
-                    st.markdown("#### Critical Path Bottlenecks")
-                    for act_name, freq in list(sim_res["critical_path_frequency"].items())[:5]:
-                        st.caption(f"**{act_name}**: bottleneck in {freq}% of simulations")
-            
-            # Recommended Actions
-            st.markdown("#### Prescriptive Recommendations")
-            for rec in summary['recommended_actions']:
-                st.markdown(f"- {rec}")
-                
-            # Pareto Frontier from optimization
-            st.markdown("#### Cost-Risk Pareto Frontier")
-            try:
-                from simulation_engine import optimize_procurement as opt_proc
-                opt = opt_proc(
-                    [{"material_type": "TMT Steel", "quantity": 80},
-                     {"material_type": "OPC Cement", "quantity": 500}],
-                    state, current_month
-                )
-                if opt.get("pareto_frontier"):
-                    pf = pd.DataFrame(opt["pareto_frontier"])
-                    fig_opt = px.line(pf, x="extra_spend_pct", y="risk_reduction_pct",
-                                     markers=True, title="Optimal Trade-offs (Extra Spend vs Risk Reduction)",
-                                     text="label")
-                    fig_opt.update_traces(textposition="top center", textfont_size=10)
-                    fig_opt.update_layout(paper_bgcolor='#1a1d2e', plot_bgcolor='#1a1d2e',
-                                          font_color='#e8eaf6',
-                                          xaxis_title="Extra Spend (%)", yaxis_title="Risk Reduction (%)")
-                    st.plotly_chart(fig_opt, use_container_width=True)
-            except Exception:
-                st.caption("Pareto optimization requires trained models.")
-                
-            st.info("Use the **Agentic Assistant** tab to ask Jarvis for a detailed mitigation strategy.")
+                        acts[["activity", "pct_simulations_delayed",
+                              "avg_delay_when_delayed", "max_delay_observed"]].rename(
+                            columns={"activity": "Activity",
+                                     "pct_simulations_delayed": "Slips in %",
+                                     "avg_delay_when_delayed": "Avg slip (d)",
+                                     "max_delay_observed": "Worst (d)"}),
+                        use_container_width=True, hide_index=True, height=310,
+                        column_config={"Slips in %": st.column_config.ProgressColumn(
+                            "Slips in %", format="%.0f%%", min_value=0, max_value=100)})
 
-# ═══════════════════════════════════════════
-# TAB 7: AGENTIC ASSISTANT
-# ═══════════════════════════════════════════
-with tab7:
-    st.markdown("### 🤖 KAYA Jarvis — Agentic AI")
-    st.caption("Chat with NirmanAI's procurement assistant (hooks into Simulator, Optimizer, and ML models).")
-    
+                if sim.get("single_points_of_failure"):
+                    st.markdown("##### ⚠️ Single points of failure")
+                    for s in sim["single_points_of_failure"][:4]:
+                        st.markdown(
+                            f"- **{s['activity']}** depends on *{s['single_material']}* "
+                            f"alone — late in {s['delay_frequency']:.0f}% of runs. "
+                            f"{s['recommendation']}.")
+
+            with c2:
+                st.markdown("##### Which materials cause it")
+                mats = pd.DataFrame(sim["material_risk_ranking"])
+                if not mats.empty:
+                    fig = go.Figure(go.Bar(
+                        x=mats["delay_frequency"], y=mats["material"], orientation="h",
+                        marker=dict(color=[ui.RISK_COLORS["Critical"] if c
+                                           else ui.RISK_COLORS["Medium"]
+                                           for c in mats["is_critical"]],
+                                    line=dict(width=0)),
+                        text=[f"{v:.0f}%" for v in mats["delay_frequency"]],
+                        textposition="outside", textfont=dict(size=11),
+                        customdata=mats[["deliveries_per_project", "project_impact_pct"]],
+                        hovertemplate="%{y}<br>%{x:.0f}% of its deliveries land late"
+                                      "<br>%{customdata[0]:.0f} deliveries per project"
+                                      "<br>slips at least once in %{customdata[1]:.0f}% "
+                                      "of projects<extra></extra>"))
+                    ui.apply_plot_theme(fig, height=330,
+                                        title="Share of each material's deliveries that land late")
+                    fig.update_layout(
+                        xaxis=dict(title="% of deliveries late", range=[0, 108],
+                                   gridcolor="rgba(255,255,255,0.06)"),
+                        yaxis=dict(autorange="reversed"))
+                    st.plotly_chart(fig, use_container_width=True)
+                    st.caption("Per delivery, not per project — a material used by four "
+                               "activities would otherwise saturate at 100%.")
+
+                if sim.get("cascade_risk"):
+                    st.markdown("##### Cascade effects")
+                    for cr in sim["cascade_risk"][:3]:
+                        st.markdown(
+                            f"- **{cr['material']}** — {cr['cascade_events']:,} cascade "
+                            f"events, averaging {cr['avg_cascade_delay']:.0f} days, "
+                            f"hitting {len(cr['activities_affected'])} downstream activities.")
+
+            st.markdown("##### What to do about it")
+            for i, action in enumerate(summary["recommended_actions"], 1):
+                st.markdown(f"**{i}.** {action}")
+
+
+# ══════════════════════════════════════════════════════════════
+# 5 · PLAN & REPORT
+# ══════════════════════════════════════════════════════════════
+
+with tab_plan:
+    st.markdown(ui.section(
+        "Step 5", "Procurement plan &amp; site report",
+        "Turn everything above into an order schedule your buyer can act on today, "
+        "then export it."), unsafe_allow_html=True)
+
+    plan_materials = st.multiselect(
+        "Materials to plan", MATERIALS,
+        default=["TMT Steel", "OPC Cement", "River Sand", "Fly Ash Bricks"],
+        key="plan_mats")
+
+    if not plan_materials:
+        st.markdown(ui.empty_state(
+            "📋", "Nothing to plan yet",
+            "Select the materials in your Bill of Quantities to generate an order "
+            "schedule with wastage buffers and supplier allocations."),
+            unsafe_allow_html=True)
+    else:
+        plan_boq = {}
+        cols = st.columns(min(len(plan_materials), 5))
+        for i, mat in enumerate(plan_materials):
+            with cols[i % len(cols)]:
+                plan_boq[mat] = st.number_input(mat, 1, 200000, 400, key=f"plan_{mat}")
+
+        if st.button("Generate procurement plan", type="primary",
+                     use_container_width=True, key="gen_plan"):
+            with safe_panel("The procurement planner"):
+                with st.spinner("Scoring delay risk, sizing buffers and optimising "
+                                "supplier allocation…"):
+                    from simulation_engine import optimize_procurement
+                    from suppliers_db import find_suppliers, state_distance_km
+
+                    wf = cached_wastage(plan_boq, PROJECT_CTX, MODELS_READY)
+                    wmap = wf.set_index("material").to_dict("index") if not wf.empty else {}
+
+                    rows = []
+                    for mat, qty in plan_boq.items():
+                        sups = find_suppliers(mat, state)
+                        supplier = sups[0] if sups else {
+                            "name": "No supplier on file", "state": state,
+                            "tier": "Tier 2 (Regional Distributor)",
+                            "reliability_score": 0.7, "avg_lead_days": 14}
+                        distance = state_distance_km(supplier["state"], state)
+
+                        from demo_data import _heuristic_delay, build_delay_input
+                        payload = build_delay_input(
+                            mat, supplier, state, current_month, qty,
+                            distance_km=distance, rng=np.random.default_rng(11))
+                        if MODELS_READY:
+                            from train_delay_model import predict_delay
+                            res = predict_delay(
+                                MODELS["clf_delay"], MODELS["reg_delay"],
+                                MODELS["conformal"], MODELS["enc_delay"],
+                                MODELS["feat_delay"], payload,
+                                explainer=MODELS.get("explainer"))
+                        else:
+                            res = _heuristic_delay(payload)
+
+                        # Lead-time buffer sized from the model, not a fixed rule.
+                        buffer_days = res["delay_probability"] * res["conditional_delay_days"]
+                        order_by = supplier["avg_lead_days"] + buffer_days
+                        w = wmap.get(mat, {})
+
+                        rows.append({
+                            "Material": mat,
+                            "Order this many days out": round(order_by),
+                            "Risk": res["risk_label"],
+                            "Delay risk": res["delay_probability"] * 100,
+                            "Blueprint": qty,
+                            "Order qty (incl. wastage)": round(w.get("order_qty", qty)),
+                            "Wastage": f"{w.get('wastage_pct', 0):.1f}%",
+                            "Supplier": supplier["name"],
+                            "Lead": f"{supplier['avg_lead_days']} d",
+                            "Buffer": f"+{buffer_days:.0f} d",
+                            "Why": res["top_risk_factors"][0]
+                            if res["top_risk_factors"] else "—",
+                            "_cost": w.get("cost_overrun", 0),
+                        })
+
+                plan = pd.DataFrame(rows).sort_values(
+                    "Order this many days out", ascending=False)
+
+                st.markdown("#### Order schedule")
+                st.markdown(ui.why(
+                    "The lead-time buffer is <b>risk-weighted</b>: probability of delay × "
+                    "expected days late. A 90%-risk cement order gets a real buffer; a "
+                    "5%-risk tile order gets almost none. A flat '2 weeks early for "
+                    "everything' rule ties up working capital for no reason."),
+                    unsafe_allow_html=True)
+
+                st.dataframe(
+                    plan.drop(columns=["_cost"]),
+                    use_container_width=True, hide_index=True,
+                    column_config={
+                        "Delay risk": st.column_config.ProgressColumn(
+                            "Delay risk", format="%.0f%%", min_value=0, max_value=100),
+                        "Order this many days out": st.column_config.NumberColumn(
+                            "Order this many days out", format="%d d"),
+                    })
+
+                total_waste = float(plan["_cost"].sum())
+                if total_waste:
+                    st.warning(
+                        f"Wastage buffer across this BoQ costs **{fmt_inr(total_waste)}** — "
+                        "already built into the order quantities above, so you buy it once "
+                        "instead of discovering it mid-pour.", icon="💸")
+
+                # ── Supplier allocation & Pareto ──
+                st.markdown("#### Supplier allocation — cost versus stock-out risk")
+                opt = optimize_procurement(
+                    [{"material_type": m, "quantity": q} for m, q in plan_boq.items()],
+                    state, current_month)
+
+                st.markdown(ui.why(
+                    "Two suppliers on the same corridor are <b>not independent</b> — the "
+                    f"same monsoon hits both. We model that common-mode correlation at "
+                    f"<b>{opt['common_mode_correlation']:.0%}</b> for {month_name}, which is "
+                    "why splitting an order removes some risk but never all of it. A model "
+                    "that assumed independence would claim a ~97% reduction here, and be "
+                    "wrong."), unsafe_allow_html=True)
+
+                alloc = pd.DataFrame(opt["procurement_strategy"])
+                if not alloc.empty:
+                    ac1, ac2 = st.columns([5, 4])
+                    with ac1:
+                        show = alloc[["material", "strategy", "primary_supplier",
+                                      "primary_allocation_pct", "backup_supplier",
+                                      "backup_allocation_pct",
+                                      "estimated_delay_reduction_pct",
+                                      "cost_premium_pct"]].rename(columns={
+                                          "material": "Material", "strategy": "Strategy",
+                                          "primary_supplier": "Primary",
+                                          "primary_allocation_pct": "Primary %",
+                                          "backup_supplier": "Backup",
+                                          "backup_allocation_pct": "Backup %",
+                                          "estimated_delay_reduction_pct": "Stock-out risk ↓",
+                                          "cost_premium_pct": "Cost premium"})
+                        st.dataframe(show, use_container_width=True, hide_index=True,
+                                     column_config={
+                                         "Stock-out risk ↓": st.column_config.NumberColumn(
+                                             "Stock-out risk ↓", format="%.0f%%"),
+                                         "Cost premium": st.column_config.NumberColumn(
+                                             "Cost premium", format="%.1f%%")})
+                        st.info(opt["recommendation"], icon="🎯")
+
+                    with ac2:
+                        pf = pd.DataFrame(opt.get("pareto_frontier", []))
+                        if not pf.empty:
+                            fig = go.Figure()
+                            off = pf[~pf["on_frontier"]]
+                            on = pf[pf["on_frontier"]]
+                            if not off.empty:
+                                fig.add_trace(go.Scatter(
+                                    x=off["extra_spend_pct"], y=off["risk_reduction_pct"],
+                                    mode="markers", name="Dominated",
+                                    marker=dict(size=9, color="#3a475f",
+                                                line=dict(width=0)),
+                                    hovertemplate="%{text}<extra></extra>",
+                                    text=off["label"]))
+                            fig.add_trace(go.Scatter(
+                                x=on["extra_spend_pct"], y=on["risk_reduction_pct"],
+                                mode="lines+markers+text", name="Pareto frontier",
+                                line=dict(color=ui.RISK_COLORS["Medium"], width=2),
+                                marker=dict(size=12, color=ui.RISK_COLORS["Medium"],
+                                            line=dict(width=0)),
+                                text=on["label"], textposition="top center",
+                                textfont=dict(size=10),
+                                hovertemplate="%{text}<br>+%{x:.1f}% spend → "
+                                              "%{y:.0f}% less risk<extra></extra>"))
+                            ui.apply_plot_theme(fig, height=330,
+                                                title="Every allocation we evaluated")
+                            fig.update_layout(
+                                xaxis=dict(title="Extra spend (%)",
+                                           gridcolor="rgba(255,255,255,0.06)"),
+                                yaxis=dict(title="Stock-out risk removed (%)",
+                                           gridcolor="rgba(255,255,255,0.06)"),
+                                showlegend=True,
+                                legend=dict(orientation="h", y=-0.25, font=dict(size=10)))
+                            st.plotly_chart(fig, use_container_width=True)
+                            st.caption("Grey points are dominated — something else is both "
+                                       "cheaper and safer. Only the amber line is worth "
+                                       "considering.")
+
+    st.markdown("---")
+    st.markdown("#### 📄 Export the site report")
+    st.caption("A single-page brief the site engineer can carry into the morning meeting: "
+               "risk summary, material forecast and the action list.")
+
+    if st.button("Generate report", use_container_width=True, key="gen_report"):
+        with safe_panel("The report generator"):
+            with st.spinner("Building the report…"):
+                import uuid
+                from report_generator import generate_pdf_report
+
+                rid = f"RPT-{uuid.uuid4().hex[:8].upper()}"
+                path = generate_pdf_report(
+                    report_id=rid, project_name=project_name, project_type=project_type,
+                    state=state, current_month=month_name,
+                    output_dir="reports/generated",
+                    models=MODELS if MODELS_READY else None,
+                    # Report the project the user actually configured, not defaults.
+                    boq=st.session_state.get("last_boq"),
+                    site_conditions=PROJECT_CTX)
+
+            is_pdf = str(path).lower().endswith(".pdf")
+            st.success(f"Report **{rid}** ready.", icon="✅")
+            with open(path, "rb") as fh:
+                st.download_button(
+                    label=f"⬇️  Download {'PDF' if is_pdf else 'HTML'} report",
+                    data=fh.read(),
+                    file_name=f"NirmanAI_{rid}.{'pdf' if is_pdf else 'html'}",
+                    mime="application/pdf" if is_pdf else "text/html",
+                    use_container_width=True)
+            if not is_pdf:
+                st.caption("WeasyPrint is not available in this environment, so the report "
+                           "was exported as HTML. It prints to PDF from any browser.")
+
+
+# ══════════════════════════════════════════════════════════════
+# ASK JARVIS
+# ══════════════════════════════════════════════════════════════
+
+with tab_agent:
+    st.markdown(ui.section(
+        "", "Ask Jarvis",
+        "A procurement assistant wired to the same engines as the rest of this "
+        "dashboard: the simulator, the optimiser, the supplier database and the "
+        "report generator."), unsafe_allow_html=True)
+
+    QUICK = {
+        "🎲 Simulate my project": "Simulate my project timeline risk",
+        "🏭 Find alternate suppliers": f"Find alternate OPC Cement suppliers for {state}",
+        "🎯 Optimise my procurement": "Generate an optimised procurement strategy for TMT Steel",
+        "📄 Generate a report": "Generate a risk report for this project",
+    }
+
+    st.caption("Try one of these, or type your own question below.")
+    pending = None
+    for col, (label, prompt_text) in zip(st.columns(4), QUICK.items()):
+        if col.button(label, use_container_width=True, key=f"quick_{label}"):
+            pending = prompt_text
+
     if "messages" not in st.session_state:
         st.session_state.messages = []
-    
+
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             if msg.get("tool"):
-                st.caption(f"🔧 Tool used: {msg['tool']}")
+                st.caption(f"🔧 Called: `{msg['tool']}`")
 
-    if prompt := st.chat_input("Ask Jarvis to simulate risks, find alternate suppliers, or optimize procurement..."):
-        st.session_state.messages.append({"role": "user", "content": prompt})
+    typed = st.chat_input("Ask about delays, suppliers, simulations or reports…")
+    question = typed or pending
+
+    if question:
+        st.session_state.messages.append({"role": "user", "content": question})
         with st.chat_message("user"):
-            st.markdown(prompt)
-            
+            st.markdown(question)
+
         with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                from agent import process_agent_message
-                ctx = {
-                    "project_type": project_type,
-                    "state": state,
-                    "month": current_month
-                }
-                res = process_agent_message(prompt, "demo-conv-123", context=ctx)
+            with safe_panel("Jarvis"):
+                with st.spinner("Working…"):
+                    from agent import process_agent_message
+                    res = process_agent_message(
+                        question, "nirmanai-session",
+                        context={"project_type": project_type, "state": state,
+                                 "month": current_month, "project_name": project_name})
                 st.markdown(res["message"])
                 if res["tool_used"]:
-                    st.caption(f"🔧 Tool used: {res['tool_used']}")
-                st.session_state.messages.append({"role": "assistant", "content": res["message"], "tool": res["tool_used"]})
+                    st.caption(f"🔧 Called: `{res['tool_used']}`")
+                st.session_state.messages.append({
+                    "role": "assistant", "content": res["message"],
+                    "tool": res["tool_used"]})
 
-# ═══════════════════════════════════════════
-# TAB 8: PDF EXPORT
-# ═══════════════════════════════════════════
-with tab8:
-    st.markdown('### 📄 Generate Risk Report')
-    st.caption('Export a branded PDF report with risk analysis, wastage forecasts, and action items.')
-    report_name = st.text_input('Report Project Name', project_name, key='rpt_name')
-    if st.button('📄 Generate Report', type='primary', use_container_width=True, key='gen_report'):
-        with st.spinner('Generating branded report...'):
-            from report_generator import generate_pdf_report
-            import uuid
-            rid = f'RPT-{uuid.uuid4().hex[:8].upper()}'
-            filepath = generate_pdf_report(
-                report_id=rid,
-                project_name=report_name,
-                project_type=project_type,
-                state=state,
-                current_month=current_month,
-                output_dir='reports/generated',
-                models=models if models_ok else None
-            )
-            st.success(f'Report generated: {rid}')
-            with open(filepath, 'rb') as f:
-                st.download_button(
-                    label='Download Report',
-                    data=f.read(),
-                    file_name=f'NirmanAI_{rid}.html',
-                    mime='text/html',
-                    use_container_width=True
-                )
+    if not st.session_state.messages:
+        st.markdown(ui.empty_state(
+            "🤖", "Jarvis is connected to the live engines",
+            "It does not just talk — it runs the Monte Carlo simulator, queries the "
+            "71-supplier database and calls the procurement optimiser, then reports what "
+            "they returned. Without a Gemini key it still works, using direct tool "
+            "routing."), unsafe_allow_html=True)
 
-# ── FOOTER ────────────────────────────────────────────────────
+
+# ══════════════════════════════════════════════════════════════
+
 st.markdown("---")
 st.markdown(
-    "<p style='text-align:center;color:#4a5568;font-size:12px;'>"
-    "NirmanAI | Built by Team Aim-Nexus, IIT Madras | "
-    "KAYA x IIT India Hackathon 2026 | "
-    "Every prediction includes confidence intervals — because responsible AI never overpromises."
-    "</p>",
-    unsafe_allow_html=True
+    f"""<p class="footer-note">
+      <b style="color:#8d9bb5;">NirmanAI</b> · Team Aim-Nexus, IIT Madras ·
+      KAYA × IIT India Hackathon 2026<br>
+      Every prediction carries a calibrated interval and the factors behind it.
+      Models last trained {METRICS.get('trained_at', '—')}.
+    </p>""",
+    unsafe_allow_html=True,
 )

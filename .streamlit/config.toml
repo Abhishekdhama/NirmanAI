@@ -1,10 +1,24 @@
 [theme]
 base = "dark"
-primaryColor = "#4fc3f7"
-backgroundColor = "#0f1117"
-secondaryBackgroundColor = "#1a1d2e"
-textColor = "#e8eaf6"
+primaryColor = "#ffb020"
+backgroundColor = "#0b0e14"
+secondaryBackgroundColor = "#131823"
+textColor = "#eef2f9"
 font = "sans serif"
 
 [server]
 headless = true
+# Uploads are not used; keeping this small avoids a needless memory ceiling.
+maxUploadSize = 5
+
+[browser]
+gatherUsageStats = false
+
+[client]
+# Hide the hamburger menu and the "Deploy" button. On a shared screen they read
+# as "this is a Streamlit app" rather than "this is a product", and the menu
+# exposes source/rerun controls a judge should not be clicking mid-demo.
+#
+# Leaving showErrorDetails at its default so the team can still debug a hosted
+# failure. See DEPLOYMENT.md for the demo-day switch that hides raw tracebacks.
+toolbarMode = "minimal"
