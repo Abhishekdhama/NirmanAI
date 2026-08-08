@@ -1,21 +1,44 @@
+# ── Serialisation-critical: pinned ────────────────────────────
+# models/*.pkl are committed to the repo and loaded, not retrained, on deploy.
+# Pickles are version-sensitive, so these four must match the versions the
+# artefacts were trained with or the dashboard silently drops to fallback mode.
+scikit-learn==1.5.2
+xgboost==3.4.0
+lightgbm==4.7.0
+numpy>=2.0,<3
+
+# MAPIE 1.x renamed MapieQuantileRegressor, which breaks both training and the
+# unpickling of models/delay_conformal.pkl. Inference degrades gracefully to the
+# split-conformal quantile without it, but the adaptive intervals need <1.0.
+mapie>=0.8,<1.0
+
+# ── Core ──────────────────────────────────────────────────────
 pandas>=2.2
-numpy>=1.26
 scipy>=1.11
-scikit-learn>=1.5
-xgboost>=2.0
-lightgbm>=4.3
+joblib>=1.4
+python-dotenv>=1.0
+requests>=2.32
+
+# ── Dashboard ─────────────────────────────────────────────────
+streamlit>=1.35
+plotly>=5.22
+
+# ── Explainability & training ─────────────────────────────────
 shap>=0.45
 matplotlib>=3.9
 seaborn>=0.13
-streamlit>=1.35
-plotly>=5.22
+
+# ── REST API ──────────────────────────────────────────────────
 fastapi>=0.111
 uvicorn>=0.30
 pydantic>=2.7
-requests>=2.32
-python-dotenv>=1.0
-mapie>=0.8
-joblib>=1.4
+
+# ── Report export ─────────────────────────────────────────────
+# WeasyPrint needs native pango/cairo libraries; see packages.txt. Without them
+# the report exports as HTML instead of PDF, which the app handles and labels.
 weasyprint>=61.0
 Jinja2>=3.1
+
+# ── Optional: conversational layer for Jarvis ─────────────────
+# Only imported when GEMINI_API_KEY is set. Jarvis works without it.
 google-generativeai
