@@ -1,42 +1,76 @@
 """
-NirmanAI — One-click Setup & Run Script
-Run this first: python setup.py
-Then run dashboard: streamlit run app.py
-"""
-import subprocess, sys, os
+NirmanAI — one-command setup
 
-def run(cmd):
-    print(f"\n>>> {cmd}")
+    python setup.py
+
+Installs dependencies, generates the synthetic datasets, trains both model
+families, and verifies that the artefacts actually load. Then:
+
+    streamlit run app.py
+"""
+
+import subprocess
+import sys
+
+STEPS = 5
+
+
+def run(cmd, description, step):
+    print(f"\n[{step}/{STEPS}] {description}")
+    print(f"      $ {cmd}")
     result = subprocess.run(cmd, shell=True)
     if result.returncode != 0:
-        print(f"[ERROR] Command failed: {cmd}")
+        print(f"\n[FAILED] {description}")
+        print("         Fix the error above and re-run `python setup.py`.")
         sys.exit(1)
 
-print("\n" + "="*55)
+
+print("\n" + "=" * 62)
 print("  NirmanAI — Setup & Training Pipeline")
 print("  Team Aim-Nexus | IIT Madras")
-print("="*55)
+print("=" * 62)
 
-# 1. Install dependencies
-print("\n[1/4] Installing dependencies...")
-run(f"{sys.executable} -m pip install -q -r requirements.txt")
+if sys.version_info < (3, 9):
+    print(f"\n[FAILED] Python {sys.version_info.major}.{sys.version_info.minor} "
+          "is too old. NirmanAI needs Python 3.9 or newer.")
+    sys.exit(1)
 
-# 2. Generate datasets
-print("\n[2/4] Generating synthetic datasets...")
-run(f"{sys.executable} generate_data.py")
+run(f'"{sys.executable}" -m pip install -q -r requirements.txt',
+    "Installing dependencies", 1)
+run(f'"{sys.executable}" generate_data.py',
+    "Generating synthetic datasets", 2)
+run(f'"{sys.executable}" train_delay_model.py',
+    "Training the delay prediction models", 3)
+run(f'"{sys.executable}" train_wastage_model.py',
+    "Training the wastage estimation models", 4)
 
-# 3. Train models
-print("\n[3/4] Training delay prediction model...")
-run(f"{sys.executable} train_delay_model.py")
+# Verifying the bundle here is the difference between finding a problem now and
+# finding it on stage: a version mismatch can leave the artefacts on disk but
+# unloadable, and the dashboard would silently drop to its fallback mode.
+print(f"\n[{STEPS}/{STEPS}] Verifying the trained models load")
+try:
+    from model_store import load_models, conformal_label
 
-print("\n[3/4] Training wastage estimation model...")
-run(f"{sys.executable} train_wastage_model.py")
+    bundle = load_models()
+    if bundle is None:
+        raise RuntimeError("model_store could not load the required artefacts")
 
-# 4. Done
-print("\n" + "="*55)
-print("  [✓] Setup complete!")
-print("="*55)
-print("\nNext step — Launch the dashboard:")
-print("  streamlit run app.py")
-print("\nDashboard will open at: http://localhost:8501")
-print("="*55 + "\n")
+    metrics = bundle.get("metrics", {})
+    print("      [OK] All models loaded")
+    print(f"      Delay classifier AUC : {metrics.get('auc', 0):.3f} "
+          f"(ceiling {metrics.get('bayes_ceiling_auc', 0):.3f})")
+    print(f"      Interval method      : {conformal_label(bundle['conformal_type'])}")
+    print(f"      SHAP explainer       : "
+          f"{'ready' if bundle.get('explainer') is not None else 'unavailable'}")
+except Exception as exc:
+    print(f"      [FAILED] {type(exc).__name__}: {exc}")
+    print("      The dashboard will still start, but in rule-based fallback mode.")
+    sys.exit(1)
+
+print("\n" + "=" * 62)
+print("  Setup complete.")
+print("=" * 62)
+print("\n  Launch the dashboard:   streamlit run app.py")
+print("  Launch the REST API:    uvicorn api:app --reload --port 8000")
+print("\n  Dashboard opens at http://localhost:8501")
+print("=" * 62 + "\n")
