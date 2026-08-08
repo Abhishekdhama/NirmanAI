@@ -147,7 +147,14 @@ def predict_wastage(reg, reg_lo, reg_hi, encoders, feature_names, input_dict: di
 
     wastage_pct    = float(np.clip(reg.predict(X_input)[0], 0.5, 60.0))
     wastage_lo     = float(np.clip(reg_lo.predict(X_input)[0], 0.0, 60.0))
-    wastage_hi     = float(np.clip(reg_hi.predict(X_input)[0], wastage_pct, 80.0))
+    wastage_hi     = float(np.clip(reg_hi.predict(X_input)[0], 0.0, 80.0))
+
+    # The three heads are fitted independently, so on some inputs the quantiles
+    # cross and the "range" ends up not containing the point estimate — an
+    # interval of 16.1-17.4% around a prediction of 15.1% reads as a bug and
+    # undermines every other number on the page. Re-sort so the band always
+    # brackets the median.
+    wastage_lo, wastage_pct, wastage_hi = sorted((wastage_lo, wastage_pct, wastage_hi))
     blueprint_qty  = row.get("blueprint_quantity", 100)
     actual_qty     = blueprint_qty * (1 + wastage_pct / 100)
     price          = MATERIAL_PRICES.get(row.get("material_type", "OPC Cement"), 500)

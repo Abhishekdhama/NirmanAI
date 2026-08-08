@@ -67,13 +67,17 @@ def get_live_weather(state: str, api_key: Optional[str] = None) -> Dict:
     month = datetime.datetime.now().month
     
     # Default/Fallback simulated data
+    # `source` lets callers tell a real observation apart from the seasonal
+    # fallback. Without it, a report can print "Severe monsoon conditions —
+    # 0.0mm rain in last hr", which is both contradictory and untrustworthy.
     weather_data = {
         "temperature": 30.0,
         "humidity": 60,
         "rainfall_mm": 0.0,
         "wind_speed": 5.0,
-        "weather_description": "Simulated Weather",
-        "monsoon_intensity": get_simulated_monsoon_intensity(month)
+        "weather_description": "Seasonal profile (no live feed configured)",
+        "monsoon_intensity": get_simulated_monsoon_intensity(month),
+        "source": "simulated",
     }
 
     if state_title not in STATE_COORDINATES:
@@ -108,6 +112,7 @@ def get_live_weather(state: str, api_key: Optional[str] = None) -> Dict:
                     intensity = min(1.0, intensity + 0.1)
                     
                 weather_data["monsoon_intensity"] = round(intensity, 2)
+                weather_data["source"] = "live"
         except requests.RequestException:
             # Fallback to simulated on exception gracefully
             pass
@@ -153,13 +158,22 @@ def get_weather_risk_summary(state: str, api_key: Optional[str] = None) -> Dict:
         impact = 2
         desc_prefix = "Clear weather conditions"
         
-    description = f"{desc_prefix} in {state.title()} — {weather['weather_description']}, {rainfall}mm rain in last hr."
+    # Only quote an observation when there actually is one. Appending
+    # "0.0mm rain in last hr" to "Severe monsoon conditions" reads as a
+    # contradiction and makes the whole panel look untrustworthy.
+    if weather.get("source") == "live":
+        description = (f"{desc_prefix} in {state.title()} — "
+                       f"{weather['weather_description']}, {rainfall}mm rain in the last hour.")
+    else:
+        description = (f"{desc_prefix} expected in {state.title()} "
+                       f"(seasonal profile — no live weather feed configured).")
     
     return {
         "risk_level": risk_level,
         "description": description,
         "icon": icon,
         "impact_on_delivery": impact,
+        "source": weather.get("source", "simulated"),
         "raw_weather": weather
     }
 

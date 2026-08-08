@@ -1,14 +1,13 @@
 # Python
 __pycache__/
 *.py[cod]
-*.class
 *.so
 *.egg-info/
 dist/
 build/
-*.egg
 
 # Virtual environments
+.venv/
 venv/
 env/
 .env
@@ -19,11 +18,12 @@ env/
 *.swp
 *.swo
 
-# Data & Models
+# Generated at runtime — recreated by `python setup.py`
+reports/generated/
+.backup_pre_polish/
 
-*.joblib
-*.h5
-*.pt
+# Exploratory Kaggle exports, kept out of the packaged repo
+notebooks/kaggle_exports/
 
 # OS
 .DS_Store
@@ -32,5 +32,5 @@ Thumbs.db
 # Logs
 *.log
 
-# Exclude local documents
+# Local notes
 challenges_and_development.md
