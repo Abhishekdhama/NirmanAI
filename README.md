@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <strong><a href="https://nirman-ai.streamlit.app/">Live Demo — Try NirmanAI</a></strong>
+  <strong><a href="https://nirman-ai.streamlit.app/">Live Demo </a></strong>
 </p>
 
 <p align="center">
@@ -50,7 +50,7 @@ Three things, in the order a site manager needs them:
 
 Try the deployed NirmanAI dashboard:
 
-**[Launch NirmanAI →](https://nirman-ai.streamlit.app/)**
+**[Try NirmanAI →](https://nirman-ai.streamlit.app/)**
 
 Explore delivery-risk forecasting, material-wastage prediction, SHAP-based explanations, and the 10,000-run project simulator directly in the live application.
 
