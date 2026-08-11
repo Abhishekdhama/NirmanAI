@@ -23,6 +23,8 @@ month genuinely re-scores every row.
 
 from __future__ import annotations
 
+import hashlib
+
 import numpy as np
 import pandas as pd
 
@@ -82,8 +84,17 @@ def monsoon_intensity(month: int) -> float:
 
 
 def _seed_for(state: str, month: int, project_name: str) -> int:
-    """Stable seed so a given project always yields the same order book."""
-    return abs(hash((state, month, project_name))) % (2 ** 31)
+    """
+    Stable seed so a given project always yields the same order book.
+
+    Must NOT use the builtin hash(): Python randomises string hashing per
+    process, so every server restart produced a different order book for the
+    same project — the headline "9 of 16 orders at risk" would change between
+    runs, which makes a scripted demo impossible and looks like the model is
+    unstable. blake2b is deterministic across processes and machines.
+    """
+    key = f"{state}|{month}|{project_name}".encode("utf-8")
+    return int.from_bytes(hashlib.blake2b(key, digest_size=4).digest(), "big")
 
 
 def build_delay_input(material, supplier, dest_state, month, quantity,
