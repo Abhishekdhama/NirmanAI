@@ -15,6 +15,10 @@
 </p>
 
 <p align="center">
+  <strong><a href="https://nirman-ai.streamlit.app/">Live Demo </a></strong>
+</p>
+
+<p align="center">
   Team Aim-Nexus · IIT Madras · KAYA × IIT India Hackathon 2026
 </p>
 
@@ -42,34 +46,17 @@ Three things, in the order a site manager needs them:
 3. **Simulates the whole project** 10,000 times to show what one late delivery does downstream — which is the question single-order risk cannot answer.
 
 ---
+##  Live Demo
 
-## Quick start
+Try the deployed NirmanAI dashboard:
 
-```bash
-python setup.py
-```
+**[Try NirmanAI →](https://nirman-ai.streamlit.app/)**
 
-Installs dependencies, generates the datasets, trains both model families, and verifies the artefacts load. Takes about two minutes.
-
-```bash
-streamlit run app.py
-```
-
-Opens at http://localhost:8501. No API keys required.
-
-Optional REST API:
-
-```bash
-uvicorn api:app --reload --port 8000
-```
-
-Interactive docs at http://localhost:8000/docs.
-
-> **Deploying?** See **[DEPLOYMENT.md](DEPLOYMENT.md)** — step-by-step for Streamlit
-> Community Cloud (dashboard) and Render (REST API), plus the demo-day checklist.
+Explore delivery-risk forecasting, material-wastage prediction, SHAP-based explanations, and the 10,000-run project simulator directly in the live application.
 
 ---
 
+**[demo -Video](https://drive.google.com/file/d/14dMf7ckQMb2-g4pjl4Y3Nwhkr6oAIZSm/view?usp=sharing)**
 ## The 3-minute demo path
 
 | # | Where | What to do | What it shows |
@@ -202,7 +189,6 @@ nirmanai/
 ├── data/                   # Datasets (committed, so deploys need no build step)
 ├── models/                 # Trained artefacts + a metrics card (committed)
 ├── docs/                   # README screenshots
-├── DEPLOYMENT.md           # Hosting guide for Streamlit Cloud + Render
 ├── packages.txt            # Debian deps for WeasyPrint on Streamlit Cloud
 ├── runtime.txt             # Python version pin for the host
 └── notebooks/              # Model development notebooks
