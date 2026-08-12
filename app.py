@@ -508,7 +508,6 @@ currently selected project. Only the outbound action is hypothetical.
 
 with tab_order:
     st.markdown(ui.section(
-        "Step 2", "Check a specific order",
         "", "Check a specific order",
         "Score any order before you place it. You get a probability, a calibrated "
         "day range, the drivers behind it, and the wastage buffer to add."), unsafe_allow_html=True)
@@ -667,7 +666,6 @@ with tab_order:
 
 with tab_waste:
     st.markdown(ui.section(
-        "Step 3", "Wastage &amp; cost overrun",
         "", "Wastage &amp; cost overrun",
         f"Per-material wastage for <b>{project_name}</b>, scored from this site's actual "
         f"conditions: {workforce_skill.lower()} workforce, {supervision.lower()} "
