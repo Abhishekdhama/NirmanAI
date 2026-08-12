@@ -71,7 +71,7 @@ html, body, [class*="css"], .stApp,
 .alert-po, .section-step { font-family: 'JetBrains Mono', ui-monospace, monospace; }
 
 .stApp { background: var(--bg); }
-.block-container { padding-top: 1.4rem; max-width: 1500px; }
+.block-container { padding-top: 3.5rem; max-width: 1500px; }
 
 h1, h2, h3, h4 { color: var(--text); letter-spacing: -0.02em; }
 p, li, span, label { color: var(--text); }
