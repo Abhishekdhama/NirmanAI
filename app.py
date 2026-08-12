@@ -1317,7 +1317,7 @@ st.markdown(
       <b style="color:#8d9bb5;">NirmanAI</b> · Team Aim-Nexus, IIT Madras ·
       KAYA × IIT India Hackathon 2026<br>
       Every prediction carries a calibrated interval and the factors behind it.
-      Models last trained {METRICS.get('trained_at', '—')}.
+      
     </p>""",
     unsafe_allow_html=True,
 )
