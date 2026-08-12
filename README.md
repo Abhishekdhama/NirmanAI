@@ -56,6 +56,7 @@ Explore delivery-risk forecasting, material-wastage prediction, SHAP-based expla
 
 ---
 
+**[demo -Video](https://drive.google.com/file/d/14dMf7ckQMb2-g4pjl4Y3Nwhkr6oAIZSm/view?usp=sharing)**
 ## The 3-minute demo path
 
 | # | Where | What to do | What it shows |
