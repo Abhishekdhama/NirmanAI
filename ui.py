@@ -198,6 +198,16 @@ p, li, span, label { color: var(--text); }
 .section-step {
   font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600;
   color: var(--amber); background: var(--amber-dim);
+}
+
+/* ── Tab spacing ────────────────────────────────── */
+[role="tablist"] {
+  gap: 16px !important;
+  display: flex !important;
+}
+[role="tab"] {
+  padding: 12px 20px !important;
+  margin: 0 8px !important;
   border: 1px solid rgba(255,176,32,0.3);
   padding: 3px 9px; border-radius: 6px; white-space: nowrap;
 }

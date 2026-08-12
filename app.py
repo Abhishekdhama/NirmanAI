@@ -1313,11 +1313,10 @@ with tab_agent:
 
 st.markdown("---")
 st.markdown(
-    f"""<p class="footer-note">
+    f"""<div class="footer-note">
       <b style="color:#8d9bb5;">NirmanAI</b> · Team Aim-Nexus, IIT Madras ·
       KAYA × IIT India Hackathon 2026<br>
       Every prediction carries a calibrated interval and the factors behind it.
-      
-    </p>""",
+    </div>""",
     unsafe_allow_html=True,
 )
