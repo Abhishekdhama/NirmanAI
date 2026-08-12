@@ -511,8 +511,7 @@ with tab_order:
         "Step 2", "Check a specific order",
         "", "Check a specific order",
         "Score any order before you place it. You get a probability, a calibrated "
-        "day range, the drivers behind it, and the wastage buffer to add."),
-        unsafe_allow_html=True)
+        "day range, the drivers behind it, and the wastage buffer to add."), unsafe_allow_html=True)
 
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -672,8 +671,7 @@ with tab_waste:
         "", "Wastage &amp; cost overrun",
         f"Per-material wastage for <b>{project_name}</b>, scored from this site's actual "
         f"conditions: {workforce_skill.lower()} workforce, {supervision.lower()} "
-        f"supervision, {contractor_exp} years of contractor experience."),
-        unsafe_allow_html=True)
+        f"supervision, {contractor_exp} years of contractor experience."), unsafe_allow_html=True)
 
     default_boq = {"OPC Cement": 800, "River Sand": 450, "TMT Steel": 60,
                    "Fly Ash Bricks": 28000, "Vitrified Tiles": 1400, "Plywood": 700}
