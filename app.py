@@ -362,7 +362,7 @@ tab_radar, tab_order, tab_waste, tab_sim, tab_plan, tab_agent = st.tabs([
 
 with tab_radar:
     st.markdown(ui.section(
-        "Step 1", "Risk Radar",
+        "", "Risk Radar",
         f"Every open purchase order for <b>{project_name}</b>, scored by the delay model "
         f"for {month_name} conditions in {state}."), unsafe_allow_html=True)
 
@@ -508,7 +508,7 @@ currently selected project. Only the outbound action is hypothetical.
 
 with tab_order:
     st.markdown(ui.section(
-        "Step 2", "Check a specific order",
+        "", "Check a specific order",
         "Score any order before you place it. You get a probability, a calibrated "
         "day range, the drivers behind it, and the wastage buffer to add."),
         unsafe_allow_html=True)
@@ -667,7 +667,7 @@ with tab_order:
 
 with tab_waste:
     st.markdown(ui.section(
-        "Step 3", "Wastage &amp; cost overrun",
+        "", "Wastage &amp; cost overrun",
         f"Per-material wastage for <b>{project_name}</b>, scored from this site's actual "
         f"conditions: {workforce_skill.lower()} workforce, {supervision.lower()} "
         f"supervision, {contractor_exp} years of contractor experience."),
@@ -864,7 +864,7 @@ with tab_waste:
 
 with tab_sim:
     st.markdown(ui.section(
-        "Step 4", "Project simulator — the whole schedule, 10,000 times",
+        "", "Project simulator — the whole schedule, 10,000 times",
         "Single-order risk is not the real question. The real question is what one late "
         "delivery does to <b>everything downstream</b>. This runs the full activity "
         "network as a Monte Carlo."), unsafe_allow_html=True)
@@ -1028,7 +1028,7 @@ with tab_sim:
 
 with tab_plan:
     st.markdown(ui.section(
-        "Step 5", "Procurement plan &amp; site report",
+        "", "Procurement plan &amp; site report",
         "Turn everything above into an order schedule your buyer can act on today, "
         "then export it."), unsafe_allow_html=True)
 
